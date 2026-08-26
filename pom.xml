@@ -32,9 +32,10 @@
 
         <!--
           Pinned above the Boot-managed default so the embedded container is
-          unambiguously on a patched release (the 10.1.31 default carried 14
-          critical CVEs). Remove this override once the managed version is
-          equal or newer.
+          unambiguously on the newest patched release. This upgrade (10.1.31 ->
+          10.1.48) cleared CVE-2024-50379, CVE-2024-56337, CVE-2025-24813,
+          CVE-2025-31651 and CVE-2025-55754. Raise this whenever Apache ships a
+          newer 10.1.x.
         -->
         <tomcat.version>10.1.48</tomcat.version>
 
@@ -43,7 +44,15 @@
         <testcontainers.version>1.21.3</testcontainers.version>
         <checkstyle.plugin.version>3.6.0</checkstyle.plugin.version>
         <spotbugs.plugin.version>4.8.6.6</spotbugs.plugin.version>
-        <dependency.check.version>10.0.4</dependency.check.version>
+        <!--
+          12.x fixes the NVD ingestion crash present in 10.0.4, whose embedded
+          H2 schema declares reference.url as VARCHAR(1000) while NVD now
+          publishes reference URLs well past that length:
+            DatabaseException: Value too long for column "URL CHARACTER VARYING(1000)"
+          On 10.0.4 that aborts the feed update mid-download and leaves the CVE
+          database incomplete - the scan then runs against partial data.
+        -->
+        <dependency.check.version>12.1.9</dependency.check.version>
         <jacoco.version>0.8.13</jacoco.version>
     </properties>
 
@@ -208,8 +217,9 @@
 
                       failBuildOnCVSS stays at 9: this gate exists to stop
                       critical vulnerabilities reaching production. If it fires,
-                      upgrade the dependency - do not raise this number and do
-                      not add a suppression for a CVE that has a patch.
+                      upgrade the dependency. Only when NO patched release
+                      exists may a dated, individually justified suppression be
+                      added to config/owasp/suppressions.xml.
                     -->
                     <nvdApiKey>${env.NVD_API_KEY}</nvdApiKey>
                     <failBuildOnCVSS>9</failBuildOnCVSS>
@@ -223,6 +233,14 @@
                     <nvdApiDelay>6000</nvdApiDelay>
                     <nvdMaxRetryCount>15</nvdMaxRetryCount>
                     <assemblyAnalyzerEnabled>false</assemblyAnalyzerEnabled>
+                    <!--
+                      The Sonatype OSS Index analyzer requires credentials this
+                      project does not hold; without them it logs "Invalid
+                      credentials for the OSS Index" for every artifact and
+                      disables itself. Turned off explicitly so the log reflects
+                      the intent. NVD remains the authoritative source.
+                    -->
+                    <ossindexAnalyzerEnabled>false</ossindexAnalyzerEnabled>
                 </configuration>
             </plugin>
 

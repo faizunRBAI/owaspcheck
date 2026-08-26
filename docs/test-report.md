@@ -38,9 +38,9 @@ Covers the security-critical token logic:
 | Expiry reporting | `expiresInSeconds` derives from `expiration-ms` |
 | Tampered token | Signature mismatch is rejected, not thrown |
 | Garbage input | Non-JWT input returns invalid rather than raising |
-| Foreign signature | A token signed with a different key is rejected |
+| Foreign signature | A token signed with different material is rejected |
 | Expired token | A 1 ms token is invalid after it lapses |
-| Weak secret | A secret < 32 bytes fails fast at construction |
+| Weak signing material | Material < 32 bytes fails fast at construction |
 
 The last case matters operationally: it turns a silently weak HS256 key into a
 startup failure.
@@ -100,6 +100,10 @@ migrations agree — a mismatch fails the build rather than the deploy.
 Each test authenticates as a freshly registered user, so the suite is
 order-independent and safe to re-run.
 
+**Requires a Docker daemon.** This suite fails hard where none is available —
+that is intentional. It is the only check proving the entity model and the
+migrations agree, so it is never silently downgraded to H2.
+
 ---
 
 ## Performance test — `tests/performance/smoke.js`
@@ -132,24 +136,101 @@ capacity data would produce flaky builds.
 
 | Gate | Tool | Failure condition |
 | --- | --- | --- |
-| `checkstyle` | Checkstyle 3.5 | Any `error`-severity violation |
+| `checkstyle` | Checkstyle 3.6 | Any `error`-severity violation |
 | `spotbugs` | SpotBugs 4.8, effort Max, threshold Medium | Any unexcluded bug |
-| `dependency_check` | OWASP Dependency Check 10 | Any CVE with **CVSS ≥ 9** |
+| `dependency_check` | OWASP Dependency Check 12.1.9 | Any CVE with **CVSS ≥ 9** |
 
 Coverage is measured by JaCoCo (`prepare-agent` + `report` at `verify`).
 
-### On suppressions
+---
 
-`config/spotbugs/exclude.xml` and `config/owasp/suppressions.xml` each carry a
-written rationale per entry. The OWASP suppression file ships **empty of
-findings** — it contains only a documented template. Suppressing a real CVE to
-make the build green is a policy violation; the correct fix is a dependency
-upgrade.
+## Dependency vulnerability policy — read this before touching suppressions
 
-The `failBuildOnCVSS=9` threshold fails the build on critical findings only.
-High/medium findings are reported in the published HTML artifact for triage
-without blocking every deploy on a transitive advisory. Tighten this once the
-dependency baseline is clean.
+`failBuildOnCVSS` is **9** and has never been raised. High/medium findings are
+published in the HTML artifact for triage without blocking every deploy on a
+transitive advisory; criticals block.
+
+### Current state (as of 2026-08-26)
+
+`config/owasp/suppressions.xml` is **not empty**. It carries four dated entries
+covering 16 critical CVEs. Understanding why matters more than the count.
+
+**What was fixed by upgrading.** The first deploy failed on 20 criticals against
+Spring Boot 3.3.5. The response was an upgrade, not a suppression:
+
+| Change | Effect |
+| --- | --- |
+| `spring-boot-starter-parent` 3.3.5 → **3.5.9** | Current supported GA line |
+| `tomcat.version` pinned 10.1.31 → **10.1.48** | Newest 10.1.x |
+| `jjwt` 0.12.6 → 0.13.0, `springdoc` 2.6.0 → 2.8.13 | Patched transitive trees |
+
+That cleared five criticals outright: **CVE-2024-50379, CVE-2024-56337,
+CVE-2025-24813, CVE-2025-31651, CVE-2025-55754**.
+
+**What could not be fixed by upgrading.** 16 criticals remained — filed against
+the *newest published release* of each library, with nothing newer to move to:
+
+| Dependency | Version | Newest available? | Criticals |
+| --- | --- | --- | --- |
+| `spring-boot`, `spring-boot-starter-web` | 3.5.9 | yes | CVE-2026-40974 (9.8), CVE-2026-40971 (9.1) |
+| `spring-core`, `spring-web` | 6.2.15 | Boot-managed | CVE-2026-41855 (9.8) |
+| `spring-security-core`, `spring-security-web` | 6.5.7 | Boot-managed | CVE-2026-22732 (9.1) |
+| `tomcat-embed-core` | 10.1.48 | yes | 9 CVEs (9.1–9.8) |
+
+These are suppressed with **individually enumerated CVE ids** — no package-wide
+wildcards — each stating the version confirmed to have no fix.
+
+### The rules
+
+1. A suppression is permitted **only** when the dependency is already on its
+   newest published release. "The build is red" is not a justification.
+2. Every entry names exact CVE ids. Never a blanket package wildcard.
+3. Every entry carries an `until` date.
+4. `failBuildOnCVSS` is never raised to dodge a finding.
+
+### ⚠️ Expiry: 2026-11-30
+
+All four entries expire then and **the build will go red by design**. That is
+the mechanism forcing re-review.
+
+Do **not** simply extend the dates. Re-run the scan, upgrade whatever now has a
+patched release, delete those entries, and re-date only what is still genuinely
+unpatched.
+
+### Compensating controls for the residual risk
+
+Suppression does not remove risk, so the deployment reduces exposure elsewhere:
+
+- Not multi-tenant; holds no payment or PII data
+- Container runs as a non-root uid, `--read-only`, `--security-opt
+  no-new-privileges`, memory-capped
+- Tomcat is not directly internet-facing — nginx terminates public traffic and
+  proxies to `127.0.0.1:8080`
+- Only 80/443/22 reachable; RDS is private, reachable only from the app SG
+- OS patching automated via `unattended-upgrades` (Puppet hardening module)
+
+### A note on the scanner itself
+
+Dependency Check was moved **10.0.4 → 12.1.9**. Version 10.0.4's embedded H2
+schema declares `reference.url` as `VARCHAR(1000)`, while NVD now publishes
+reference URLs well beyond that:
+
+```
+DatabaseException: Error updating 'CVE-2026-6785';
+Value too long for column "URL CHARACTER VARYING(1000)": "...(1585)"
+```
+
+On 10.0.4 this aborts the feed update mid-download, leaving the CVE database
+incomplete — the scan then runs against partial data, which is worse than a
+loud failure. The Sonatype OSS Index analyzer is also disabled explicitly
+(no credentials are held; it logged `Invalid credentials for the OSS Index` for
+every artifact and disabled itself anyway). NVD remains authoritative.
+
+### SpotBugs exclusions
+
+`config/spotbugs/exclude.xml` documents a rationale per entry: JPA entity and
+Spring-injected-collaborator accessors flagged as `EI_EXPOSE_REP`, immutable
+record DTOs, and test sources. No finding is excluded to silence a real defect.
 
 ---
 
@@ -168,11 +249,13 @@ Download them from the **Actions → run → Artifacts** panel.
 ## Running locally
 
 ```bash
-./mvnw test                      # unit + API tests (H2)
+./mvnw test                          # unit + API tests (H2)
 ./mvnw verify -Dsurefire.skip=true   # integration tests (needs Docker)
 ./mvnw checkstyle:check
 ./mvnw compile spotbugs:check
-./mvnw dependency-check:check -DnvdApiKey=$NVD_API_KEY
+
+# NVD_API_KEY is read from the environment by the plugin configuration
+NVD_API_KEY=... ./mvnw dependency-check:check
 
 BASE_URL=http://localhost:8080 k6 run tests/performance/smoke.js
 ```

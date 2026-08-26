@@ -4,7 +4,7 @@ Enterprise service catalog API: projects, teams, environments and deployments,
 secured with JWT and deployed to AWS through a fully automated pipeline.
 
 ```
-Java 21 · Spring Boot 3.3 · PostgreSQL 16 · Docker · Terraform · Puppet · Ansible · GitHub Actions
+Java 21 · Spring Boot 3.5 · PostgreSQL 16 · Docker · Terraform · Puppet · Ansible · GitHub Actions
 ```
 
 | | |
@@ -111,7 +111,9 @@ See `.udap/architecture.d2` (source of truth) and `docs/deployment-diagram.d2`.
 ./mvnw verify -Dsurefire.skip=true     # integration tests (Testcontainers, needs Docker)
 ./mvnw checkstyle:check
 ./mvnw compile spotbugs:check
-./mvnw dependency-check:check -DnvdApiKey=$NVD_API_KEY
+
+# NVD_API_KEY is read from the environment by the plugin configuration
+NVD_API_KEY=... ./mvnw dependency-check:check
 
 BASE_URL=http://localhost:8080 k6 run tests/performance/smoke.js
 ```
@@ -121,6 +123,31 @@ Flyway migrations and `hibernate.ddl-auto=validate` — entity/schema drift fail
 the build, not the deploy.
 
 Full strategy: [`docs/test-report.md`](docs/test-report.md).
+
+---
+
+## Security gates
+
+| Gate | Failure condition |
+| --- | --- |
+| Checkstyle | Any `error`-severity violation |
+| SpotBugs (effort Max) | Any unexcluded finding |
+| OWASP Dependency Check 12.1.9 | Any CVE with **CVSS ≥ 9** |
+
+**`config/owasp/suppressions.xml` is not empty.** It carries four dated entries
+covering 16 critical CVEs that have **no patched release available** — every
+affected library is already on its newest published version. An earlier upgrade
+(Spring Boot 3.3.5 → 3.5.9, tomcat-embed-core 10.1.31 → 10.1.48) genuinely
+cleared five criticals; these are the residue.
+
+`failBuildOnCVSS` is **9** and has never been raised to dodge a finding.
+
+> ⚠️ **The suppressions expire 2026-11-30 and the build will go red by design.**
+> Do not extend the dates. Re-run the scan, upgrade whatever now has a fix,
+> delete those entries, and re-date only what remains genuinely unpatched.
+
+Policy, per-CVE rationale and compensating controls:
+[`docs/test-report.md`](docs/test-report.md#dependency-vulnerability-policy--read-this-before-touching-suppressions).
 
 ---
 
@@ -206,6 +233,8 @@ Full reference: [`docs/api-documentation.md`](docs/api-documentation.md).
 4. **SSH open to `0.0.0.0/0`** — GitHub-hosted runner IPs are broad; key-only
    auth and no root login mitigate. Restrict to a bastion or go SSM-only.
 5. **`skip_final_snapshot = true`** — clean teardown, but destructive.
+6. **16 suppressed critical CVEs** with no upstream fix — see Security gates
+   above; expires 2026-11-30.
 
 ---
 
