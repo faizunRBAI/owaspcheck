@@ -11,9 +11,22 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-/** Issues and validates the portal's JWT access tokens. */
+/**
+ * Issues and validates the portal's JWT access tokens.
+ *
+ * <p>Declared {@code final} deliberately. The constructor validates the signing
+ * key and throws when it is too weak to sign HS256 tokens; a constructor that
+ * throws leaves a partially initialized object that a malicious subclass could
+ * resurrect by overriding {@code finalize()}, bypassing that validation
+ * (SpotBugs CT_CONSTRUCTOR_THROW). Making the class final removes the
+ * subclassing vector entirely, so the fail-fast check can be kept rather than
+ * weakened into a silent fallback.
+ */
 @Component
-public class JwtTokenProvider {
+public final class JwtTokenProvider {
+
+    /** Minimum key length in bytes required by HS256. */
+    private static final int MIN_KEY_LENGTH_BYTES = 32;
 
     private static final Logger LOG = LoggerFactory.getLogger(JwtTokenProvider.class);
 
@@ -21,12 +34,12 @@ public class JwtTokenProvider {
     private final SecretKey signingKey;
 
     public JwtTokenProvider(JwtProperties properties) {
-        this.properties = properties;
         byte[] keyBytes = properties.getSecret().getBytes(StandardCharsets.UTF_8);
-        if (keyBytes.length < 32) {
+        if (keyBytes.length < MIN_KEY_LENGTH_BYTES) {
             throw new IllegalStateException(
                     "idp.jwt.secret must be at least 32 characters to sign HS256 tokens");
         }
+        this.properties = properties;
         this.signingKey = Keys.hmacShaKeyFor(keyBytes);
     }
 
