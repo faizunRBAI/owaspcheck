@@ -66,7 +66,16 @@ stages:
           distribution: temurin
           java-version: "21"
           cache: maven
-      - name: Checkstyle
+      # Generate the report FIRST so the artifact exists even when the
+      # check below fails - otherwise a red gate leaves no evidence to read.
+      - name: Generate Checkstyle report
+        run: mvn -B -ntp checkstyle:checkstyle
+      - name: Upload Checkstyle report
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkstyle-report
+          path: target/checkstyle-result.xml
+      - name: Checkstyle gate
         run: mvn -B -ntp checkstyle:check
 
   - id: spotbugs
@@ -80,8 +89,18 @@ stages:
           distribution: temurin
           java-version: "21"
           cache: maven
-      - name: SpotBugs
-        run: mvn -B -ntp compile spotbugs:check
+      # Generate the XML report FIRST so the findings are always published,
+      # then run the gate. spotbugs:check prints bug instances to the console
+      # too, but the artifact is what makes a red run diagnosable.
+      - name: Generate SpotBugs report
+        run: mvn -B -ntp compile spotbugs:spotbugs
+      - name: Upload SpotBugs report
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotbugs-report
+          path: target/spotbugsXml.xml
+      - name: SpotBugs gate
+        run: mvn -B -ntp spotbugs:check
 
   - id: dependency_check
     kind: security
@@ -111,8 +130,6 @@ stages:
     env:
       GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GHCR_USER: ${{ github.actor }}
-      IMAGE_SHA: ghcr.io/${{ github.repository }}:${{ github.sha }}
-      IMAGE_LATEST: ghcr.io/${{ github.repository }}:latest
     steps:
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -122,6 +139,15 @@ stages:
           cache: maven
       - name: Package jar
         run: mvn -B -ntp clean package -DskipTests
+      # GHCR requires a fully lowercase image path, but github.repository
+      # preserves the owner's original case (faizunRBAI). Normalise once and
+      # reuse for build, push and the configure stage's image reference.
+      - name: Resolve lowercase image reference
+        run: |
+          repo_lc=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_SHA=ghcr.io/${repo_lc}:${{ github.sha }}" >> "$GITHUB_ENV"
+          echo "IMAGE_LATEST=ghcr.io/${repo_lc}:latest" >> "$GITHUB_ENV"
+          echo "resolved image: ghcr.io/${repo_lc}"
       - name: Log in to GHCR
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
       - name: Build image
@@ -213,7 +239,6 @@ stages:
       HOST: ${{ needs.provision.outputs.instance_ip }}
       SSH_USER: ${{ secrets.SSH_USER }}
       SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-      IMAGE_REF: ghcr.io/${{ github.repository }}:${{ github.sha }}
       GHCR_USER: ${{ github.actor }}
       GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       APP_DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
@@ -227,6 +252,13 @@ stages:
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install "ansible-core>=2.16"
+      # Same lowercase normalisation as docker_push - the tag pushed there
+      # must match the tag pulled here exactly.
+      - name: Resolve lowercase image reference
+        run: |
+          repo_lc=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_REF=ghcr.io/${repo_lc}:${{ github.sha }}" >> "$GITHUB_ENV"
+          echo "resolved image: ghcr.io/${repo_lc}:${{ github.sha }}"
       - name: Read DB endpoint from terraform state
         working-directory: infra
         run: |
