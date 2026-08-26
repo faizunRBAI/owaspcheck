@@ -92,15 +92,23 @@ jobs:
         distribution: temurin
         java-version: '21'
         cache: maven
+    - name: Confirm SpotBugs exclude filter is present
+      run: 'ls -l config/spotbugs/exclude.xml
+
+        echo "--- filter contents ---"
+
+        cat config/spotbugs/exclude.xml
+
+        '
     - name: Generate SpotBugs report
-      run: mvn -B -ntp compile spotbugs:spotbugs
+      run: mvn -B -ntp compile spotbugs:spotbugs -Dspotbugs.excludeFilterFile=config/spotbugs/exclude.xml
     - name: Upload SpotBugs report
       uses: actions/upload-artifact@v4
       with:
         name: spotbugs-report
         path: target/spotbugsXml.xml
     - name: SpotBugs gate
-      run: mvn -B -ntp spotbugs:check
+      run: mvn -B -ntp spotbugs:check -Dspotbugs.excludeFilterFile=config/spotbugs/exclude.xml
   dependency_check:
     runs-on: ubuntu-latest
     needs:

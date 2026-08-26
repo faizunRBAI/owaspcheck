@@ -44,6 +44,25 @@
         <testcontainers.version>1.21.3</testcontainers.version>
         <checkstyle.plugin.version>3.6.0</checkstyle.plugin.version>
         <spotbugs.plugin.version>4.8.6.6</spotbugs.plugin.version>
+
+        <!--
+          SpotBugs settings declared as USER PROPERTIES, not only inside the
+          plugin's <configuration> block.
+
+          The pipeline invokes the goals directly from the command line
+          (`mvn spotbugs:spotbugs` then `mvn spotbugs:check`). For a direct
+          CLI invocation the plugin resolves these from its user properties,
+          and the exclude filter declared only under <configuration> was not
+          being applied - proven by com.enterprise.idp.dto.ApiError being
+          reported despite a blanket dto exclusion that existed in every
+          revision of config/spotbugs/exclude.xml.
+
+          Declaring them here makes both invocations honour the same filter.
+        -->
+        <spotbugs.effort>Max</spotbugs.effort>
+        <spotbugs.threshold>Medium</spotbugs.threshold>
+        <spotbugs.excludeFilterFile>config/spotbugs/exclude.xml</spotbugs.excludeFilterFile>
+
         <!--
           Kept current (was 10.0.4). NOTE: 12.1.9 does NOT fix the H2 schema
           issue where reference.url is VARCHAR(1000) and NVD publishes longer
@@ -201,10 +220,16 @@
                 <groupId>com.github.spotbugs</groupId>
                 <artifactId>spotbugs-maven-plugin</artifactId>
                 <version>${spotbugs.plugin.version}</version>
+                <!--
+                  Kept in addition to the user properties above so a
+                  lifecycle-bound invocation behaves identically to the direct
+                  CLI invocations the pipeline uses. The properties are what
+                  actually take effect for `mvn spotbugs:check`.
+                -->
                 <configuration>
-                    <effort>Max</effort>
-                    <threshold>Medium</threshold>
-                    <excludeFilterFile>config/spotbugs/exclude.xml</excludeFilterFile>
+                    <effort>${spotbugs.effort}</effort>
+                    <threshold>${spotbugs.threshold}</threshold>
+                    <excludeFilterFile>${spotbugs.excludeFilterFile}</excludeFilterFile>
                 </configuration>
             </plugin>
 

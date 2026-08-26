@@ -89,18 +89,28 @@ stages:
           distribution: temurin
           java-version: "21"
           cache: maven
+      # Prove the filter file is actually present and readable before the
+      # analysis runs. A silently-unresolved excludeFilterFile is what made
+      # earlier runs report findings that the filter should have suppressed.
+      - name: Confirm SpotBugs exclude filter is present
+        run: |
+          ls -l config/spotbugs/exclude.xml
+          echo "--- filter contents ---"
+          cat config/spotbugs/exclude.xml
       # Generate the XML report FIRST so the findings are always published,
-      # then run the gate. spotbugs:check prints bug instances to the console
-      # too, but the artifact is what makes a red run diagnosable.
+      # then run the gate. The exclude filter is passed EXPLICITLY on both
+      # invocations: these goals run directly from the CLI, and relying on
+      # the plugin <configuration> block alone did not apply the filter
+      # (proved by dto.ApiError being reported despite a blanket dto match).
       - name: Generate SpotBugs report
-        run: mvn -B -ntp compile spotbugs:spotbugs
+        run: mvn -B -ntp compile spotbugs:spotbugs -Dspotbugs.excludeFilterFile=config/spotbugs/exclude.xml
       - name: Upload SpotBugs report
         uses: actions/upload-artifact@v4
         with:
           name: spotbugs-report
           path: target/spotbugsXml.xml
       - name: SpotBugs gate
-        run: mvn -B -ntp spotbugs:check
+        run: mvn -B -ntp spotbugs:check -Dspotbugs.excludeFilterFile=config/spotbugs/exclude.xml
 
   - id: dependency_check
     kind: security
