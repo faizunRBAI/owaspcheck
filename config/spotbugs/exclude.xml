@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!--
+      SpotBugs exclusions. Each entry documents WHY the pattern is not a defect
+      in this codebase - exclusions are never added to silence a real finding.
+    -->
+
+    <!-- JPA entities intentionally expose mutable java.time values; these are
+         immutable types in practice and Hibernate requires the accessors. -->
+    <Match>
+        <Package name="com.enterprise.idp.domain"/>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+
+    <!-- Spring injects singleton collaborators; storing the reference is the
+         documented constructor-injection pattern, not representation exposure. -->
+    <Match>
+        <Or>
+            <Package name="com.enterprise.idp.service"/>
+            <Package name="com.enterprise.idp.controller"/>
+            <Package name="com.enterprise.idp.security"/>
+        </Or>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+
+    <!-- Generated Java records produce accessors SpotBugs flags for returning
+         internal state; records are immutable value carriers. -->
+    <Match>
+        <Package name="com.enterprise.idp.dto"/>
+    </Match>
+
+    <!-- Test sources are not shipped. -->
+    <Match>
+        <Source name="~.*[\\/]src[\\/]test[\\/].*"/>
+    </Match>
+</FindBugsFilter>

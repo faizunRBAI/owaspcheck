@@ -1,0 +1,92 @@
+---
+# Application delivery: environment file, image pull, systemd-managed container.
+# Uses only ansible.builtin modules - ansible-core ships no community.docker.
+#
+# Every command task declares changed_when explicitly: docker login and prune
+# are read-mostly probes, and the pull reports change only when it actually
+# downloaded new layers. This keeps reruns honest and idempotent.
+
+- name: Ensure the application config directory exists
+  ansible.builtin.file:
+    path: "{{ app_dir }}/config"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Write the runtime environment file
+  ansible.builtin.template:
+    src: app.env.j2
+    dest: "{{ app_dir }}/config/app.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  register: env_file
+
+- name: Log in to GHCR
+  ansible.builtin.command:
+    argv:
+      - docker
+      - login
+      - ghcr.io
+      - --username
+      - "{{ ghcr_user }}"
+      - --password-stdin
+  args:
+    stdin: "{{ ghcr_token }}"
+  register: ghcr_login
+  changed_when: false
+  failed_when: ghcr_login.rc != 0
+  no_log: true
+
+- name: Pull the application image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - pull
+      - "{{ image_ref }}"
+  register: docker_pull
+  changed_when: "'Downloaded newer image' in docker_pull.stdout"
+  failed_when: docker_pull.rc != 0
+  retries: 3
+  delay: 15
+  until: docker_pull.rc == 0
+
+- name: Install the systemd unit for the portal container
+  ansible.builtin.template:
+    src: idp-portal.service.j2
+    dest: /etc/systemd/system/{{ container_name }}.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: unit_file
+
+- name: Reload systemd so the unit definition is current
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Enable the portal service at boot
+  ansible.builtin.systemd_service:
+    name: "{{ container_name }}"
+    enabled: true
+
+# Always restart on a deploy: the image tag is pinned to the commit SHA, so a
+# new image or a changed environment file must take effect immediately.
+- name: Restart the portal service to apply the current image and configuration
+  ansible.builtin.systemd_service:
+    name: "{{ container_name }}"
+    state: restarted
+
+- name: Remove dangling images left by previous deployments
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - prune
+      - --force
+      - --filter
+      - dangling=true
+  register: prune
+  changed_when: "'Total reclaimed space: 0B' not in prune.stdout"
+  failed_when: prune.rc != 0

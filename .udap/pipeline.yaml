@@ -1,0 +1,297 @@
+version: 1
+name: owaspcheck
+vcs: github
+rollback:
+  strategy: rerun
+stages:
+  - id: build
+    kind: build
+    timeout_minutes: 25
+    steps:
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Maven build
+        run: mvn -B -ntp clean compile
+
+  - id: unit_tests
+    kind: test
+    needs: [build]
+    timeout_minutes: 25
+    steps:
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Unit tests
+        run: mvn -B -ntp test
+      - name: Upload surefire report
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: target/surefire-reports
+
+  - id: integration_tests
+    kind: test
+    needs: [build]
+    timeout_minutes: 35
+    steps:
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Integration tests (Testcontainers PostgreSQL)
+        run: mvn -B -ntp verify -Dsurefire.skip=true
+      - name: Upload failsafe report
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-report
+          path: target/failsafe-reports
+
+  - id: checkstyle
+    kind: lint
+    needs: [build]
+    timeout_minutes: 20
+    steps:
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Checkstyle
+        run: mvn -B -ntp checkstyle:check
+
+  - id: spotbugs
+    kind: lint
+    needs: [build]
+    timeout_minutes: 25
+    steps:
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: SpotBugs
+        run: mvn -B -ntp compile spotbugs:check
+
+  - id: dependency_check
+    kind: security
+    needs: [build]
+    timeout_minutes: 45
+    env:
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+    steps:
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: OWASP Dependency Check
+        run: mvn -B -ntp dependency-check:check
+      - name: Upload dependency-check report
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-dependency-check-report
+          path: target/dependency-check-report.html
+
+  - id: docker_push
+    kind: build_push
+    needs: [unit_tests, integration_tests, checkstyle, spotbugs, dependency_check]
+    timeout_minutes: 30
+    env:
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GHCR_USER: ${{ github.actor }}
+      IMAGE_SHA: ghcr.io/${{ github.repository }}:${{ github.sha }}
+      IMAGE_LATEST: ghcr.io/${{ github.repository }}:latest
+    steps:
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Package jar
+        run: mvn -B -ntp clean package -DskipTests
+      - name: Log in to GHCR
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+      - name: Build image
+        run: docker build -t "$IMAGE_SHA" -t "$IMAGE_LATEST" .
+      - name: Push image
+        run: docker push "$IMAGE_SHA"
+      - name: Push latest tag
+        run: docker push "$IMAGE_LATEST"
+
+  - id: provision
+    kind: provision
+    needs: [docker_push]
+    timeout_minutes: 40
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      TF_VAR_project_name: ${{ secrets.PROJECT_NAME }}
+      TF_VAR_aws_region: us-east-1
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+    outputs:
+      instance_ip: ${{ steps.tf_out.outputs.instance_ip }}
+    steps:
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: Terraform init
+        working-directory: infra
+        run: |
+          terraform init -input=false -reconfigure \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+      - name: Terraform validate
+        working-directory: infra
+        run: terraform validate
+      - name: Terraform apply
+        working-directory: infra
+        run: terraform apply -auto-approve -input=false
+      - name: Export instance IP
+        id: tf_out
+        working-directory: infra
+        run: echo "instance_ip=$(terraform output -raw instance_public_ip)" >> "$GITHUB_OUTPUT"
+
+  - id: puppet_bootstrap
+    kind: custom
+    needs: [provision]
+    timeout_minutes: 30
+    env:
+      HOST: ${{ needs.provision.outputs.instance_ip }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+    steps:
+      - name: Write SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+      - name: Wait for SSH
+        run: |
+          for i in $(seq 1 30); do
+            if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -i ~/.ssh/deploy_key "$SSH_USER@$HOST" 'echo ready'; then
+              exit 0
+            fi
+            echo "SSH not ready yet (attempt $i), retrying in 10s"
+            sleep 10
+          done
+          echo "SSH never became available"
+          exit 1
+      - name: Copy Puppet manifests
+        run: scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key -r puppet "$SSH_USER@$HOST:/tmp/puppet"
+      - name: Install Puppet agent
+        run: ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key "$SSH_USER@$HOST" 'sudo bash /tmp/puppet/install_puppet.sh'
+      - name: Apply Puppet bootstrap manifest
+        run: ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key "$SSH_USER@$HOST" 'sudo /opt/puppetlabs/bin/puppet apply --detailed-exitcodes --modulepath=/tmp/puppet/modules /tmp/puppet/manifests/site.pp; rc=$?; if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then exit 0; fi; exit "$rc"'
+
+  - id: configure
+    kind: configure
+    needs: [provision, puppet_bootstrap]
+    timeout_minutes: 30
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      HOST: ${{ needs.provision.outputs.instance_ip }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      IMAGE_REF: ghcr.io/${{ github.repository }}:${{ github.sha }}
+      GHCR_USER: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      APP_DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      APP_JWT_SECRET: ${{ secrets.JWT_SECRET }}
+    steps:
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: Install Ansible
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "ansible-core>=2.16"
+      - name: Read DB endpoint from terraform state
+        working-directory: infra
+        run: |
+          terraform init -input=false -reconfigure \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+          echo "DB_HOST=$(terraform output -raw db_address)" >> "$GITHUB_ENV"
+          echo "DB_NAME=$(terraform output -raw db_name)" >> "$GITHUB_ENV"
+          echo "DB_USER=$(terraform output -raw db_username)" >> "$GITHUB_ENV"
+      - name: Write SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts
+      - name: Generate inventory
+        run: |
+          printf '[app]\n%s ansible_user=%s ansible_ssh_private_key_file=%s\n' "$HOST" "$SSH_USER" "$HOME/.ssh/deploy_key" > ansible/inventory.ini
+          cat ansible/inventory.ini
+      - name: Run Ansible playbook
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible-playbook -i ansible/inventory.ini ansible/site.yml \
+            -e "image_ref=$IMAGE_REF" \
+            -e "ghcr_user=$GHCR_USER" \
+            -e "ghcr_token=$GHCR_TOKEN" \
+            -e "db_host=$DB_HOST" \
+            -e "db_name=$DB_NAME" \
+            -e "db_user=$DB_USER" \
+            -e "db_password=$APP_DB_PASSWORD" \
+            -e "jwt_secret=$APP_JWT_SECRET"
+
+  - id: verify
+    kind: verify
+    needs: [provision, configure]
+    timeout_minutes: 15
+    env:
+      HOST: ${{ needs.provision.outputs.instance_ip }}
+    steps:
+      - name: Health check /actuator/health
+        run: curl --fail --show-error --silent --retry 20 --retry-delay 15 --retry-all-errors "http://$HOST/actuator/health"
+      - name: Assert HTTP 200
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --retry 10 --retry-delay 10 --retry-all-errors "http://$HOST/actuator/health")
+          echo "health status=$code"
+          test "$code" = "200"
+      - name: Verify OpenAPI document is served
+        run: |
+          curl --fail --silent --retry 10 --retry-delay 10 --retry-all-errors "http://$HOST/v3/api-docs" > /dev/null
+          echo "OpenAPI document reachable"
+
+  - id: perf
+    kind: perf
+    needs: [verify]
+    timeout_minutes: 20
+    env:
+      BASE_URL: http://${{ needs.provision.outputs.instance_ip }}
+    steps:
+      - name: Install k6
+        run: |
+          curl -fsSL https://github.com/grafana/k6/releases/download/v0.49.0/k6-v0.49.0-linux-amd64.tar.gz -o /tmp/k6.tar.gz
+          tar -xzf /tmp/k6.tar.gz -C /tmp
+          sudo install /tmp/k6-v0.49.0-linux-amd64/k6 /usr/local/bin/k6
+          k6 version
+      - name: Run k6 smoke performance test
+        run: k6 run tests/performance/smoke.js

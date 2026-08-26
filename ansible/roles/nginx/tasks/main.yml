@@ -1,0 +1,48 @@
+---
+- name: Install nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+  register: nginx_install
+  retries: 5
+  delay: 15
+  until: nginx_install is succeeded
+
+- name: Remove the default site so it cannot shadow the portal vhost
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: reload nginx
+
+- name: Deploy the portal reverse-proxy vhost
+  ansible.builtin.template:
+    src: portal.conf.j2
+    dest: /etc/nginx/sites-available/portal.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload nginx
+
+- name: Enable the portal vhost
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/portal.conf
+    dest: /etc/nginx/sites-enabled/portal.conf
+    state: link
+    force: true
+  notify: reload nginx
+
+- name: Validate the nginx configuration before any reload
+  ansible.builtin.command:
+    argv:
+      - nginx
+      - -t
+  register: nginx_test
+  changed_when: false
+  failed_when: nginx_test.rc != 0
+
+- name: Ensure nginx is running and enabled at boot
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true

@@ -1,0 +1,38 @@
+# Managed by Ansible - do not edit on the host.
+[Unit]
+Description=Internal Developer Portal ({{ container_name }})
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+TimeoutStartSec=300
+TimeoutStopSec=90
+
+# Remove any container left behind by a previous run so the name is free.
+# The leading '-' makes a missing container a non-error.
+ExecStartPre=-/usr/bin/docker rm -f {{ container_name }}
+
+# Foreground container: systemd supervises the docker client process, so
+# Restart=always reacts to the container exiting.
+ExecStart=/usr/bin/docker run \
+    --rm \
+    --name {{ container_name }} \
+    --env-file {{ app_dir }}/config/app.env \
+    --publish 127.0.0.1:{{ app_port }}:{{ app_port }} \
+    --log-driver json-file \
+    --log-opt max-size=20m \
+    --log-opt max-file=5 \
+    --memory 1300m \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+    --security-opt no-new-privileges \
+    {{ image_ref }}
+
+ExecStop=/usr/bin/docker stop --time 60 {{ container_name }}
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+---
+# The app role restarts the service explicitly on every deploy (the image tag
+# is pinned to the commit SHA), so no restart handler is needed here. This
+# handler exists for the systemd reload path used by ad-hoc unit edits.
+- name: reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true

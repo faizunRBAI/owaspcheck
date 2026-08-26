@@ -1,0 +1,22 @@
+# udap:meta cloud=aws region=us-east-1 target=ec2
+
+developer: Developer / API Client { shape: person; udap-type: generic.user }
+ghcr: GHCR Container Registry { shape: rectangle; udap-type: generic.cdn }
+actions: GitHub Actions CI/CD { shape: rectangle; udap-type: generic.app }
+vpc: VPC 10.20.0.0/16 {
+  eip: Elastic IP { shape: rectangle; udap-type: aws.ec2 }
+  nginx: Nginx Reverse Proxy :80 { shape: rectangle; udap-type: generic.app }
+  app: IDP Spring Boot Container :8080 { shape: rectangle; udap-type: aws.ec2 }
+  db: RDS PostgreSQL 16 { shape: cylinder; udap-type: aws.rds }
+}
+iam: EC2 IAM Role { shape: rectangle; udap-type: aws.ec2 }
+
+developer -> vpc.eip: HTTPS/HTTP 80
+vpc.eip -> vpc.nginx: forwards
+vpc.nginx -> vpc.app: proxy_pass 127.0.0.1:8080
+vpc.app -> vpc.db: JDBC 5432 (private)
+actions -> ghcr: push image
+actions -> vpc.app: Puppet bootstrap then Ansible deploy
+vpc.app -> ghcr: docker pull image
+iam -> vpc.app: instance profile
+developer -> vpc.nginx: GET /actuator/health

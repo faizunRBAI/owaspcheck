@@ -1,0 +1,62 @@
+# Deployment view of the Internal Developer Portal.
+# Rendered with: d2 docs/deployment-diagram.d2 docs/deployment-diagram.svg
+
+direction: down
+
+dev: Developer {
+  shape: person
+}
+
+gh: GitHub {
+  repo: Repository\nowaspcheck
+  actions: GitHub Actions\ndeploy.yml
+  ghcr: GHCR\nghcr.io/<owner>/owaspcheck
+}
+
+aws: AWS us-east-1 {
+  style.stroke: "#ff9900"
+
+  vpc: VPC 10.20.0.0/16 {
+
+    public: Public subnet 10.20.1.0/24 {
+      ec2: EC2 t3.small\nUbuntu 22.04 {
+        nginx: nginx :80
+        container: Docker container\nowaspcheck :8080
+        nginx -> container: proxy_pass\n127.0.0.1:8080
+      }
+      eip: Elastic IP
+      eip -> ec2: associated
+    }
+
+    private: Private subnets 10.20.10.0/24, 10.20.11.0/24 {
+      rds: RDS PostgreSQL 16\ndb.t3.micro {
+        shape: cylinder
+      }
+    }
+
+    sg_app: SG app\n22, 80, 443
+    sg_db: SG db\n5432 from SG app
+  }
+
+  iam: IAM role\n+ instance profile
+  tfstate: S3 backend\nterraform state {
+    shape: cylinder
+  }
+}
+
+dev -> gh.repo: git push
+gh.repo -> gh.actions: workflow_dispatch
+gh.actions -> gh.ghcr: 1. build + push image
+gh.actions -> aws.tfstate: 2. terraform init/apply
+gh.actions -> aws.vpc.public.ec2: 3. puppet apply\n(java, docker, users, hardening)
+gh.actions -> aws.vpc.public.ec2: 4. ansible\n(nginx, container, env, start)
+gh.actions -> aws.vpc.public.eip: 5. GET /actuator/health
+
+aws.vpc.public.ec2.container -> gh.ghcr: docker pull
+aws.vpc.public.ec2.container -> aws.vpc.private.rds: JDBC 5432
+aws.iam -> aws.vpc.public.ec2: instance profile\n(SSM + CloudWatch)
+
+user: API consumer {
+  shape: person
+}
+user -> aws.vpc.public.eip: HTTP 80

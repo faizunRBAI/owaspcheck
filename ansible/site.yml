@@ -1,0 +1,90 @@
+---
+# Application delivery for the Internal Developer Portal.
+#
+# Runs AFTER the Puppet bootstrap stage, which has already installed Docker,
+# the Java runtime, the service accounts and the OS hardening baseline.
+# This playbook is responsible only for the application itself:
+#   nginx reverse proxy -> container -> environment configuration -> start.
+#
+# Every module used here is ansible.builtin, so ansible-core resolves them
+# without installing any additional collection.
+
+- name: Deploy the Internal Developer Portal
+  hosts: app
+  become: true
+  gather_facts: true
+
+  vars:
+    app_name: idp-portal
+    app_dir: /opt/idp
+    app_port: 8080
+    container_name: idp-portal
+    health_path: /actuator/health
+    # Provided on the command line by the configure stage:
+    #   image_ref, ghcr_user, ghcr_token,
+    #   db_host, db_name, db_user, db_password, jwt_secret
+
+  pre_tasks:
+    - name: Assert every required variable was supplied
+      ansible.builtin.assert:
+        that:
+          - image_ref is defined and image_ref | length > 0
+          - db_host is defined and db_host | length > 0
+          - db_name is defined and db_name | length > 0
+          - db_user is defined and db_user | length > 0
+          - db_password is defined and db_password | length > 0
+          - jwt_secret is defined and jwt_secret | length >= 32
+        fail_msg: >-
+          Missing or invalid deployment variables. The configure stage must pass
+          image_ref, db_host, db_name, db_user, db_password and a jwt_secret of
+          at least 32 characters.
+        quiet: true
+
+    - name: Wait for the host to accept SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        delay: 5
+
+    - name: Verify the Puppet bootstrap installed Docker
+      ansible.builtin.command:
+        argv:
+          - docker
+          - --version
+      register: docker_version
+      changed_when: false
+      failed_when: docker_version.rc != 0
+
+    - name: Report the Docker version in use
+      ansible.builtin.debug:
+        msg: "Puppet bootstrap provided {{ docker_version.stdout }}"
+
+  roles:
+    - role: nginx
+    - role: app
+
+  post_tasks:
+    - name: Wait for the application port to accept connections
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ app_port }}"
+        state: started
+        delay: 10
+        timeout: 300
+
+    - name: Poll the health endpoint through nginx until it reports UP
+      ansible.builtin.uri:
+        url: "http://127.0.0.1{{ health_path }}"
+        method: GET
+        status_code: 200
+        return_content: true
+      register: health
+      retries: 30
+      delay: 10
+      until: health.status == 200 and 'UP' in (health.content | default(''))
+      changed_when: false
+
+    - name: Report the deployed state
+      ansible.builtin.debug:
+        msg: >-
+          {{ container_name }} is healthy on {{ inventory_hostname }}
+          (image {{ image_ref }})

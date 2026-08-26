@@ -1,0 +1,61 @@
+# Managed by Ansible - do not edit on the host.
+# Reverse proxy: public port 80 -> application container on 127.0.0.1:{{ app_port }}
+
+upstream idp_portal {
+    server 127.0.0.1:{{ app_port }};
+    keepalive 32;
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    # The application performs its own authentication; nginx only proxies.
+    client_max_body_size 10m;
+
+    # Do not advertise the nginx version.
+    server_tokens off;
+
+    # Baseline security headers.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
+    gzip_min_length 1024;
+
+    access_log /var/log/nginx/portal-access.log;
+    error_log  /var/log/nginx/portal-error.log warn;
+
+    location / {
+        proxy_pass http://idp_portal;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";
+
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+    }
+
+    # Health endpoint: short timeouts so a hung app fails fast for the
+    # verify stage instead of blocking for a minute.
+    location {{ health_path }} {
+        proxy_pass http://idp_portal{{ health_path }};
+        proxy_http_version 1.1;
+
+        proxy_set_header Host       $host;
+        proxy_set_header Connection "";
+
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    10s;
+
+        access_log off;
+    }
+}
