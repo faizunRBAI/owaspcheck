@@ -4,10 +4,18 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <!--
+      Spring Boot 3.5.x is the current supported GA line. The 3.3.x line this
+      project was first pinned to is out of OSS support and carried critical
+      CVEs in spring-core, spring-security and tomcat-embed-core. Keep this
+      parent current: the OWASP gate below is the mechanism that tells us when
+      it has drifted, and the correct response is an upgrade, never a
+      suppression.
+    -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.5</version>
+        <version>3.5.9</version>
         <relativePath/>
     </parent>
 
@@ -21,13 +29,22 @@
         <java.version>21</java.version>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <jjwt.version>0.12.6</jjwt.version>
-        <springdoc.version>2.6.0</springdoc.version>
-        <testcontainers.version>1.20.3</testcontainers.version>
-        <checkstyle.plugin.version>3.5.0</checkstyle.plugin.version>
-        <spotbugs.plugin.version>4.8.6.4</spotbugs.plugin.version>
+
+        <!--
+          Pinned above the Boot-managed default so the embedded container is
+          unambiguously on a patched release (the 10.1.31 default carried 14
+          critical CVEs). Remove this override once the managed version is
+          equal or newer.
+        -->
+        <tomcat.version>10.1.48</tomcat.version>
+
+        <jjwt.version>0.13.0</jjwt.version>
+        <springdoc.version>2.8.13</springdoc.version>
+        <testcontainers.version>1.21.3</testcontainers.version>
+        <checkstyle.plugin.version>3.6.0</checkstyle.plugin.version>
+        <spotbugs.plugin.version>4.8.6.6</spotbugs.plugin.version>
         <dependency.check.version>10.0.4</dependency.check.version>
-        <jacoco.version>0.8.12</jacoco.version>
+        <jacoco.version>0.8.13</jacoco.version>
     </properties>
 
     <dependencies>
@@ -188,6 +205,11 @@
                       The NVD credential is read from the NVD_API_KEY environment
                       variable, which CI populates from a repository secret. It is
                       never written into this file or passed on the command line.
+
+                      failBuildOnCVSS stays at 9: this gate exists to stop
+                      critical vulnerabilities reaching production. If it fires,
+                      upgrade the dependency - do not raise this number and do
+                      not add a suppression for a CVE that has a patch.
                     -->
                     <nvdApiKey>${env.NVD_API_KEY}</nvdApiKey>
                     <failBuildOnCVSS>9</failBuildOnCVSS>
