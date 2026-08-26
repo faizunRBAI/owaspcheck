@@ -45,12 +45,15 @@
         <checkstyle.plugin.version>3.6.0</checkstyle.plugin.version>
         <spotbugs.plugin.version>4.8.6.6</spotbugs.plugin.version>
         <!--
-          12.x fixes the NVD ingestion crash present in 10.0.4, whose embedded
-          H2 schema declares reference.url as VARCHAR(1000) while NVD now
-          publishes reference URLs well past that length:
+          Kept current (was 10.0.4). NOTE: 12.1.9 does NOT fix the H2 schema
+          issue where reference.url is VARCHAR(1000) and NVD publishes longer
+          reference URLs:
             DatabaseException: Value too long for column "URL CHARACTER VARYING(1000)"
-          On 10.0.4 that aborts the feed update mid-download and leaves the CVE
-          database incomplete - the scan then runs against partial data.
+          Verified still present on 12.1.9 (H2 error code moved 22001-214 ->
+          22001-240, confirming the newer engine is in use). The errors are
+          NON-FATAL: they skip the reference rows of two unrelated Mozilla CVEs
+          (CVE-2026-6785/6786) while the feed download and all 192 processing
+          batches complete normally. Not worth pinning backwards for.
         -->
         <dependency.check.version>12.1.9</dependency.check.version>
         <jacoco.version>0.8.13</jacoco.version>

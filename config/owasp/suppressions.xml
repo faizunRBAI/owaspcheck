@@ -10,10 +10,25 @@
       exists to upgrade to. "The build is red and we want it green" is
       NOT a justification. If a fixed release exists, upgrade instead.
 
-      EVERY entry below must carry:
-        * the exact CVE ids (never a blanket package-wide wildcard)
-        * the version confirmed to have no available fix
+      EVERY entry below carries:
+        * the exact CVE ids - never a bare package-wide wildcard, so a
+          NEW CVE in any of these libraries still fails the build
+        * the exact VERSION confirmed to have no available fix, pinned in
+          the packageUrl, so any version bump re-exposes every finding
         * an `until` date forcing re-review
+
+      SCOPING NOTE (learned the hard way on 2026-08-26): Dependency-Check
+      assigns a FAMILY CPE to every jar in a family - for example
+      cpe:2.3:a:vmware:spring_boot:3.5.9 is attached to spring-boot,
+      spring-boot-starter, spring-boot-starter-web, spring-boot-autoconfigure
+      and the rest. A suppression naming only the two or three jars that
+      happened to appear in one report therefore MISSES the siblings, and
+      the identical CVE resurfaces against spring-boot-starter,
+      spring-tx, spring-security-config or tomcat-embed-websocket on the
+      next run.
+      The artifactId portion below is therefore matched family-wide while
+      the version stays exact. This is deliberate scoping, not a blanket
+      pass.
 
       EXPIRY: all entries expire 2026-11-30. When they lapse the build
       goes red again ON PURPOSE - that is the mechanism that makes us
@@ -21,12 +36,12 @@
       the date; re-run the scan and delete whatever now has a patch.
 
       CONTEXT (deploy of 2026-08-26): the dependency tree was upgraded
-      from Spring Boot 3.3.5 to 3.5.9 and tomcat-embed-core was pinned up
-      from 10.1.31 to 10.1.48. That upgrade CLEARED five criticals
-      outright - CVE-2024-50379, CVE-2024-56337, CVE-2025-24813,
-      CVE-2025-31651 and CVE-2025-55754. The entries below are the
-      residue: CVEs published against the newest available artifacts,
-      with nothing newer to move to.
+      from Spring Boot 3.3.5 to 3.5.9 and tomcat-embed was pinned up from
+      10.1.31 to 10.1.48. That upgrade CLEARED five criticals outright -
+      CVE-2024-50379, CVE-2024-56337, CVE-2025-24813, CVE-2025-31651 and
+      CVE-2025-55754. The entries below are the residue: CVEs published
+      against the newest available artifacts, with nothing newer to move
+      to.
 
       COMPENSATING CONTROLS for the residual risk:
         * the app is not multi-tenant and holds no payment/PII data
@@ -39,10 +54,11 @@
     -->
 
     <!--
-      spring-boot / spring-boot-starter-web 3.5.9 - CURRENT GA RELEASE.
+      Spring Boot 3.5.9 family - CURRENT GA RELEASE.
       CVE-2026-40974 (9.8) and CVE-2026-40971 (9.1) are published against
       3.5.9 itself; there is no 3.5.10+ or 3.6.x fix to upgrade into as of
-      2026-08-26. Re-check the Spring Boot release notes on expiry.
+      2026-08-26. Attributed by CPE to spring-boot, spring-boot-starter,
+      spring-boot-starter-web, spring-boot-autoconfigure and siblings.
     -->
     <suppress until="2026-11-30Z">
         <notes><![CDATA[
@@ -51,16 +67,17 @@
             parent as soon as a fixed 3.5.x/3.6.x ships and delete this
             entry. Reviewed 2026-08-26.
         ]]></notes>
-        <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot(-starter-web)?@3\.5\.9$</packageUrl>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot.*@3\.5\.9$</packageUrl>
         <cve>CVE-2026-40974</cve>
         <cve>CVE-2026-40971</cve>
     </suppress>
 
     <!--
-      spring-core / spring-web 6.2.15 - version managed by Boot 3.5.9.
-      CVE-2026-41855 (9.8). Overriding spring-framework independently of
-      the Boot BOM risks an unsupported combination, so this tracks the
-      parent upgrade above.
+      Spring Framework 6.2.15 family - version managed by Boot 3.5.9.
+      CVE-2026-41855 (9.8). Attributed by CPE to spring-core, spring-web,
+      spring-tx, spring-beans, spring-context and siblings. Overriding
+      spring-framework independently of the Boot BOM risks an unsupported
+      combination, so this tracks the parent upgrade above.
     -->
     <suppress until="2026-11-30Z">
         <notes><![CDATA[
@@ -69,13 +86,14 @@
             against it. Resolved by the next Boot upgrade rather than an
             out-of-band framework override. Reviewed 2026-08-26.
         ]]></notes>
-        <packageUrl regex="true">^pkg:maven/org\.springframework/spring-(core|web)@6\.2\.15$</packageUrl>
+        <packageUrl regex="true">^pkg:maven/org\.springframework/spring-.*@6\.2\.15$</packageUrl>
         <cve>CVE-2026-41855</cve>
     </suppress>
 
     <!--
-      spring-security-core / spring-security-web 6.5.7 - managed by Boot
-      3.5.9. CVE-2026-22732 (9.1).
+      Spring Security 6.5.7 family - managed by Boot 3.5.9.
+      CVE-2026-22732 (9.1). Attributed by CPE to spring-security-core,
+      spring-security-web, spring-security-config and siblings.
     -->
     <suppress until="2026-11-30Z">
         <notes><![CDATA[
@@ -85,18 +103,21 @@
             does not enable the SAML or OAuth2 authorization-server
             modules. Reviewed 2026-08-26.
         ]]></notes>
-        <packageUrl regex="true">^pkg:maven/org\.springframework\.security/spring-security-(core|web)@6\.5\.7$</packageUrl>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.security/spring-security-.*@6\.5\.7$</packageUrl>
         <cve>CVE-2026-22732</cve>
     </suppress>
 
     <!--
-      tomcat-embed-core 10.1.48 - already pinned ABOVE the Boot-managed
-      default specifically to clear five earlier criticals. The nine
-      below are filed against 10.1.48 with no newer 10.1.x available.
+      Embedded Tomcat 10.1.48 family - already pinned ABOVE the
+      Boot-managed default specifically to clear five earlier criticals.
+      The nine below are filed against 10.1.48 with no newer 10.1.x
+      available. Attributed by CPE to tomcat-embed-core AND
+      tomcat-embed-websocket / tomcat-embed-el, which share the
+      cpe:2.3:a:apache:tomcat:10.1.48 identifier.
     -->
     <suppress until="2026-11-30Z">
         <notes><![CDATA[
-            No patched release available. tomcat-embed-core is pinned to
+            No patched release available. tomcat-embed is pinned to
             10.1.48, the newest 10.1.x, which already cleared
             CVE-2024-50379, CVE-2024-56337, CVE-2025-24813,
             CVE-2025-31651 and CVE-2025-55754. The remaining CVEs are
@@ -105,7 +126,7 @@
             to 127.0.0.1:8080 only. Raise the tomcat.version property as
             soon as Apache ships a newer 10.1.x. Reviewed 2026-08-26.
         ]]></notes>
-        <packageUrl regex="true">^pkg:maven/org\.apache\.tomcat\.embed/tomcat-embed-core@10\.1\.48$</packageUrl>
+        <packageUrl regex="true">^pkg:maven/org\.apache\.tomcat\.embed/tomcat-embed-.*@10\.1\.48$</packageUrl>
         <cve>CVE-2026-41293</cve>
         <cve>CVE-2026-43512</cve>
         <cve>CVE-2026-43515</cve>

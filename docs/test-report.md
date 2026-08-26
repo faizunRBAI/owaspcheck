@@ -102,7 +102,8 @@ order-independent and safe to re-run.
 
 **Requires a Docker daemon.** This suite fails hard where none is available —
 that is intentional. It is the only check proving the entity model and the
-migrations agree, so it is never silently downgraded to H2.
+migrations agree, so it is never silently downgraded to H2. GitHub-hosted
+runners provide Docker; some local sandboxes do not.
 
 ---
 
@@ -170,22 +171,47 @@ CVE-2025-24813, CVE-2025-31651, CVE-2025-55754**.
 **What could not be fixed by upgrading.** 16 criticals remained — filed against
 the *newest published release* of each library, with nothing newer to move to:
 
-| Dependency | Version | Newest available? | Criticals |
+| Family | Version | Newest available? | Criticals |
 | --- | --- | --- | --- |
-| `spring-boot`, `spring-boot-starter-web` | 3.5.9 | yes | CVE-2026-40974 (9.8), CVE-2026-40971 (9.1) |
-| `spring-core`, `spring-web` | 6.2.15 | Boot-managed | CVE-2026-41855 (9.8) |
-| `spring-security-core`, `spring-security-web` | 6.5.7 | Boot-managed | CVE-2026-22732 (9.1) |
-| `tomcat-embed-core` | 10.1.48 | yes | 9 CVEs (9.1–9.8) |
+| `org.springframework.boot:spring-boot*` | 3.5.9 | yes | CVE-2026-40974 (9.8), CVE-2026-40971 (9.1) |
+| `org.springframework:spring-*` | 6.2.15 | Boot-managed | CVE-2026-41855 (9.8) |
+| `org.springframework.security:spring-security-*` | 6.5.7 | Boot-managed | CVE-2026-22732 (9.1) |
+| `org.apache.tomcat.embed:tomcat-embed-*` | 10.1.48 | yes | 9 CVEs (9.1–9.8) |
 
-These are suppressed with **individually enumerated CVE ids** — no package-wide
-wildcards — each stating the version confirmed to have no fix.
+### Scoping: why the suppressions match a family, not single jars
+
+Dependency-Check attaches a **family CPE** to every jar in a family. For example
+`cpe:2.3:a:vmware:spring_boot:3.5.9` is applied to `spring-boot`,
+`spring-boot-starter`, `spring-boot-starter-web`, `spring-boot-autoconfigure`
+and the rest — so a single CVE surfaces against all of them.
+
+A first attempt at these suppressions named only the two or three jars that
+appeared in one report. The build stayed red, because the *same* CVEs were
+attributed to siblings that were never listed:
+
+| First attempt matched | CI then failed on |
+| --- | --- |
+| `spring-boot`, `spring-boot-starter-web` | `spring-boot-starter` |
+| `spring-core`, `spring-web` | `spring-tx` |
+| `spring-security-core`, `spring-security-web` | `spring-security-config` |
+| `tomcat-embed-core` | `tomcat-embed-websocket` |
+
+The entries therefore match the **artifactId family** (`spring-boot.*`,
+`spring-.*`, `spring-security-.*`, `tomcat-embed-.*`) while keeping the
+**version exact** and the **CVE ids exact**.
+
+That combination is what preserves the gate:
+
+- a **version bump** stops matching the `packageUrl` → every finding re-surfaces
+- a **new CVE** in any of these libraries is not in the id list → build fails
+- only the specific, verified-unpatchable CVEs are silenced
 
 ### The rules
 
 1. A suppression is permitted **only** when the dependency is already on its
    newest published release. "The build is red" is not a justification.
-2. Every entry names exact CVE ids. Never a blanket package wildcard.
-3. Every entry carries an `until` date.
+2. Every entry enumerates exact CVE ids. **Never** a bare package wildcard.
+3. Every entry pins the exact version and carries an `until` date.
 4. `failBuildOnCVSS` is never raised to dodge a finding.
 
 ### ⚠️ Expiry: 2026-11-30
@@ -209,22 +235,28 @@ Suppression does not remove risk, so the deployment reduces exposure elsewhere:
 - Only 80/443/22 reachable; RDS is private, reachable only from the app SG
 - OS patching automated via `unattended-upgrades` (Puppet hardening module)
 
-### A note on the scanner itself
+### A known, non-fatal scanner defect
 
-Dependency Check was moved **10.0.4 → 12.1.9**. Version 10.0.4's embedded H2
-schema declares `reference.url` as `VARCHAR(1000)`, while NVD now publishes
-reference URLs well beyond that:
+Every run logs two ingestion errors:
 
 ```
-DatabaseException: Error updating 'CVE-2026-6785';
-Value too long for column "URL CHARACTER VARYING(1000)": "...(1585)"
+[ERROR] Failed to process CVE-2026-6785
+DatabaseException: Value too long for column "URL CHARACTER VARYING(1000)": "...(1585)"
 ```
 
-On 10.0.4 this aborts the feed update mid-download, leaving the CVE database
-incomplete — the scan then runs against partial data, which is worse than a
-loud failure. The Sonatype OSS Index analyzer is also disabled explicitly
-(no credentials are held; it logged `Invalid credentials for the OSS Index` for
-every artifact and disabled itself anyway). NVD remains authoritative.
+Dependency-Check's embedded H2 schema declares `reference.url` as
+`VARCHAR(1000)`, while NVD publishes some reference URLs beyond that length.
+
+**This is not fatal and is not the cause of any build failure.** It skips the
+reference rows of two unrelated Mozilla CVEs; the feed download and all 192
+processing batches complete normally. It is **not** fixed by upgrading the
+plugin — it was verified still present on 12.1.9 (the H2 error code moved from
+`22001-214` to `22001-240`, confirming the newer engine was in use). Do not
+spend a debugging cycle bumping the scanner version for it.
+
+The Sonatype OSS Index analyzer is disabled explicitly: no credentials are held,
+so it logged `Invalid credentials for the OSS Index` for every artifact and
+disabled itself anyway. NVD remains authoritative.
 
 ### SpotBugs exclusions
 
