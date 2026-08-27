@@ -379,5 +379,25 @@ jobs:
         k6 version
 
         '
-    - name: Run k6 smoke performance test
+    - name: Warm up the application before measuring
+      run: "set -u\necho \"Warming up $BASE_URL before the measured run\"\nfor sweep\
+        \ in 1 2 3 4 5 6 7 8 9 10; do\n  slowest=0\n  for path in /actuator/health\
+        \ / /v3/api-docs /api/v1/projects; do\n    t=$(curl -s -o /dev/null -w '%{time_total}'\
+        \ --max-time 30 \"${BASE_URL}${path}\" || echo 30)\n    ms=$(awk -v v=\"$t\"\
+        \ 'BEGIN { printf \"%d\", v * 1000 }')\n    echo \"  sweep ${sweep} ${path}\
+        \ ${ms}ms\"\n    if [ \"$ms\" -gt \"$slowest\" ]; then slowest=$ms; fi\n \
+        \ done\n  if [ \"$sweep\" -ge 2 ] && [ \"$slowest\" -lt 500 ]; then\n    echo\
+        \ \"Warm-up settled after ${sweep} sweeps (slowest ${slowest}ms)\"\n    exit\
+        \ 0\n  fi\n  sleep 3\ndone\necho \"Warm-up did not settle below 500ms; continuing\
+        \ to the measured run anyway\"\n"
+    - name: Measure performance and write the summary
+      run: k6 run --no-thresholds --summary-export=k6-summary.json tests/performance/smoke.js
+    - name: Upload k6 summary
+      uses: actions/upload-artifact@v4
+      with:
+        name: k6-performance-summary
+        path: k6-summary.json
+    - name: Report the measured numbers
+      run: cat k6-summary.json
+    - name: k6 performance gate
       run: k6 run tests/performance/smoke.js
