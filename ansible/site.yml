@@ -6,6 +6,10 @@
 # This playbook is responsible only for the application itself:
 #   nginx reverse proxy -> container -> environment configuration -> start.
 #
+# The container image is delivered REGISTRY-FREE: CI builds it, exports it as
+# a gzipped tarball and scp's it to image_archive on this host, where the app
+# role loads it with `docker load`. No registry credentials are needed here.
+#
 # Every module used here is ansible.builtin, so ansible-core resolves them
 # without installing any additional collection.
 
@@ -21,7 +25,7 @@
     container_name: idp-portal
     health_path: /actuator/health
     # Provided on the command line by the configure stage:
-    #   image_ref, ghcr_user, ghcr_token,
+    #   image_ref, image_archive,
     #   db_host, db_name, db_user, db_password, jwt_secret
 
   pre_tasks:
@@ -29,6 +33,7 @@
       ansible.builtin.assert:
         that:
           - image_ref is defined and image_ref | length > 0
+          - image_archive is defined and image_archive | length > 0
           - db_host is defined and db_host | length > 0
           - db_name is defined and db_name | length > 0
           - db_user is defined and db_user | length > 0
@@ -36,8 +41,8 @@
           - jwt_secret is defined and jwt_secret | length >= 32
         fail_msg: >-
           Missing or invalid deployment variables. The configure stage must pass
-          image_ref, db_host, db_name, db_user, db_password and a jwt_secret of
-          at least 32 characters.
+          image_ref, image_archive, db_host, db_name, db_user, db_password and a
+          jwt_secret of at least 32 characters.
         quiet: true
 
     - name: Wait for the host to accept SSH

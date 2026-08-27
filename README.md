@@ -110,7 +110,7 @@ See `.udap/architecture.d2` (source of truth) and `docs/deployment-diagram.d2`.
 ./mvnw test                            # unit + API tests (H2)
 ./mvnw verify -Dsurefire.skip=true     # integration tests (Testcontainers, needs Docker)
 ./mvnw checkstyle:check
-./mvnw compile spotbugs:check
+./mvnw compile spotbugs:check -Dspotbugs.excludeFilterFile=config/spotbugs/exclude.xml
 
 # NVD_API_KEY is read from the environment by the plugin configuration
 NVD_API_KEY=... ./mvnw dependency-check:check
@@ -146,6 +146,11 @@ cleared five criticals; these are the residue.
 > Do not extend the dates. Re-run the scan, upgrade whatever now has a fix,
 > delete those entries, and re-date only what remains genuinely unpatched.
 
+> ⚠️ **XML comments must not contain `--`.** SpotBugs treats an unparseable
+> exclude filter as a *non-fatal* error and then analyses with **no exclusions
+> at all**. Use `====` for rule lines in `config/spotbugs/exclude.xml` and
+> `config/owasp/suppressions.xml`.
+
 Policy, per-CVE rationale and compensating controls:
 [`docs/test-report.md`](docs/test-report.md#dependency-vulnerability-policy--read-this-before-touching-suppressions).
 
@@ -158,7 +163,7 @@ The pipeline is **rendered from `.udap/pipeline.yaml`**. Edit the spec, never
 
 ```
 build → [unit_tests | integration_tests | checkstyle | spotbugs | dependency_check]
-      → docker_push → provision → puppet_bootstrap → configure → verify → perf
+      → docker_build → provision → puppet_bootstrap → configure → verify → perf
 ```
 
 Server configuration is deliberately two-phase:
@@ -170,6 +175,22 @@ Server configuration is deliberately two-phase:
 
 Puppet establishes the baseline that's true of the host; Ansible ships what
 changes every release.
+
+### Image delivery is registry-free
+
+There is **no container registry**. The repository lives under a GitHub
+organization that does not permit the workflow's `GITHUB_TOKEN` to create an
+organization package, so a GHCR push fails with
+`denied: installation not allowed to Create organization package`.
+
+Instead, `docker_build` builds the image in CI, exports it with
+`docker save | gzip`, and publishes it as a workflow artifact. The `configure`
+stage `scp`s that tarball to the instance and Ansible runs `docker load`. The
+host never authenticates to a registry.
+
+To restore GHCR later: enable **Package creation** in the organization's member
+privileges, then convert `docker_build` back to a `build_push` stage and restore
+the Ansible pull.
 
 Full details: [`docs/deployment-summary.md`](docs/deployment-summary.md).
 
@@ -235,6 +256,9 @@ Full reference: [`docs/api-documentation.md`](docs/api-documentation.md).
 5. **`skip_final_snapshot = true`** — clean teardown, but destructive.
 6. **16 suppressed critical CVEs** with no upstream fix — see Security gates
    above; expires 2026-11-30.
+7. **No container registry** — the organization blocks package creation, so
+   images ship as workflow artifacts. No central image store; the full image
+   crosses the network on every deploy.
 
 ---
 

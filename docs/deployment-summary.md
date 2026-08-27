@@ -15,7 +15,7 @@ afterwards.
 | Compute | EC2 `t3.small`, Ubuntu 22.04 LTS |
 | Address | Elastic IP (stable across instance restarts) |
 | Database | RDS PostgreSQL 16.4, `db.t3.micro`, single-AZ, private |
-| Registry | GHCR — `ghcr.io/<owner>/owaspcheck` |
+| Image delivery | Registry-free — `docker save` → workflow artifact → `docker load` |
 | Front door | nginx on `:80` → container on `127.0.0.1:8080` |
 | State | Platform-managed S3 backend, key `<project>/terraform.tfstate` |
 
@@ -30,13 +30,13 @@ never `.github/workflows/deploy.yml`.
 build
   ├─→ unit_tests ──────────┐
   ├─→ integration_tests ───┤
-  ├─→ checkstyle ──────────┼─→ docker_push ─→ provision ─→ puppet_bootstrap
-  ├─→ spotbugs ────────────┤                                      │
-  └─→ dependency_check ────┘                                      ▼
-                                                              configure
-                                                                  │
-                                                                  ▼
-                                                               verify ─→ perf
+  ├─→ checkstyle ──────────┼─→ docker_build ─→ provision ─→ puppet_bootstrap
+  ├─→ spotbugs ────────────┤                                       │
+  └─→ dependency_check ────┘                                       ▼
+                                                               configure
+                                                                   │
+                                                                   ▼
+                                                                verify ─→ perf
 ```
 
 ### Stage responsibilities
@@ -49,15 +49,49 @@ build
 | `checkstyle` | Style ruleset | Any `error`-severity violation |
 | `spotbugs` | Bytecode analysis | Any unexcluded finding |
 | `dependency_check` | OWASP CVE scan (NVD API) | CVE with CVSS ≥ 9 |
-| `docker_push` | Multi-stage image → GHCR, tagged `:<sha>` and `:latest` | Build or push failure |
+| `docker_build` | Multi-stage image → `docker save` → workflow artifact | Build or export failure |
 | `provision` | `terraform apply` — VPC, EC2, EIP, SGs, IAM, RDS | Any apply error |
 | `puppet_bootstrap` | `puppet apply` — Java, Docker, users, hardening | Non-0/2 Puppet exit code |
-| `configure` | Ansible — nginx, env file, container, start | Playbook failure or unhealthy app |
+| `configure` | Ansible — nginx, env file, `docker load`, start | Playbook failure or unhealthy app |
 | `verify` | `GET /actuator/health` must return **200** | Non-200 after retries |
 | `perf` | k6 smoke test | Any threshold breached |
 
 The quality gates run **in parallel** after `build` and all must pass before an
-image is built — a failing test never produces a pushed artifact.
+image is built — a failing test never produces a deployable artifact.
+
+---
+
+## Image delivery: why there is no container registry
+
+The original design pushed the image to **GHCR** (`ghcr.io/<owner>/owaspcheck`).
+That path is blocked on this account: the repository lives under a GitHub
+**organization**, and creating the first organization-level package requires a
+permission the workflow's `GITHUB_TOKEN` does not hold. GHCR rejects the push
+with:
+
+```
+denied: installation not allowed to Create organization package
+```
+
+Rather than depend on an organization setting outside this repository, image
+delivery is **registry-free**:
+
+1. `docker_build` builds the image in CI — where the Dockerfile is already
+   proven and the build toolchain exists — tagged `owaspcheck:<sha>`.
+2. `docker save … | gzip` exports it to `owaspcheck-image.tar.gz`, uploaded as a
+   workflow artifact with a 1-day retention.
+3. `configure` downloads that artifact, `scp`s it to the instance, and Ansible
+   loads it with `docker load`.
+
+The EC2 host therefore never authenticates to a registry and never needs a JDK
+or Maven — it receives a finished image. The image tag stays pinned to the
+commit SHA, so rollback remains deterministic.
+
+**Trade-offs.** There is no central image store to pull from for ad-hoc runs or
+other environments, and the tarball crosses the network on every deploy instead
+of relying on layer caching. To restore GHCR later: enable **Package creation**
+in the organization's member privileges, then revert `docker_build` to a
+`build_push` stage that logs in and pushes, and restore the Ansible pull.
 
 ---
 
@@ -90,8 +124,9 @@ Owns *application delivery* — what changes on every release:
 
 - `nginx` role — reverse proxy vhost, default site removed, `nginx -t`
   validation before reload, security headers, gzip
-- `app` role — `0600` root-owned env file, GHCR login, image pull, systemd unit,
-  service restart, dangling-image prune
+- `app` role — `0600` root-owned env file, `docker load` from the shipped
+  tarball, image-tag verification, systemd unit, service restart, archive
+  cleanup, dangling-image prune
 
 Only `ansible.builtin` modules are used, so `ansible-core` resolves everything
 with no extra collection install.
@@ -111,10 +146,11 @@ with no extra collection install.
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Platform | `provision`, `configure` |
 | `TF_STATE_BUCKET`, `PROJECT_NAME` | Platform | Terraform backend |
 | `SSH_USER`, `SSH_PRIVATE_KEY`, `SSH_PUBLIC_KEY` | Platform | `puppet_bootstrap`, `configure` |
-| `GITHUB_TOKEN` | GitHub | GHCR push/pull |
 | `DB_PASSWORD` | Generated (alphanumeric, ≥20) | RDS master password, app env |
 | `JWT_SECRET` | Generated (alphanumeric, ≥32) | Token signing |
 | `NVD_API_KEY` | Supplied by the operator | `dependency_check` |
+
+No registry credential is required — image delivery is registry-free.
 
 Secrets appear in files only as `${{ secrets.NAME }}`. The app env file is
 written at configure time to `0600` root-owned `/opt/idp/config/app.env` with
@@ -161,6 +197,9 @@ sudo journalctl -u idp-portal -f
 docker ps
 docker logs -f idp-portal
 
+# Which image is loaded
+docker images owaspcheck
+
 # nginx
 sudo nginx -t
 sudo tail -f /var/log/nginx/portal-error.log
@@ -173,9 +212,9 @@ sudo /opt/puppetlabs/bin/puppet apply \
 ### Rollback
 
 `rollback.strategy: rerun`. To return to a previous version, re-run the deploy
-from the last known-good commit — the image tag is pinned to the commit SHA, so
-the rollback is deterministic. Terraform reconciles infrastructure from the same
-state key.
+from the last known-good commit — the image is rebuilt from that commit and
+tagged with its SHA, so the rollback is deterministic. Terraform reconciles
+infrastructure from the same state key.
 
 ### Redeploying application code only
 
@@ -195,8 +234,9 @@ service restart.
 | Elastic IP (attached) | free |
 | **Total** | **~USD 31-33/mo** |
 
-Excludes data transfer and GHCR storage. An idle EIP (instance stopped) is
-billed hourly — destroy the stack rather than stopping the instance.
+Excludes data transfer. Registry storage costs nothing here because no registry
+is used. An idle EIP (instance stopped) is billed hourly — destroy the stack
+rather than stopping the instance.
 
 ---
 
@@ -216,3 +256,6 @@ These are deliberate Tier-2 scope decisions, not defects:
    remove it.
 5. **`skip_final_snapshot = true`** on RDS — teardown is clean but destructive.
    Flip it before holding data you care about.
+6. **No container registry.** Images are shipped as workflow artifacts because
+   the organization blocks package creation (see *Image delivery* above). This
+   means no central image store and a full image transfer per deploy.

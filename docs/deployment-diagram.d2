@@ -1,5 +1,10 @@
 # Deployment view of the Internal Developer Portal.
 # Rendered with: d2 docs/deployment-diagram.d2 docs/deployment-diagram.svg
+#
+# Image delivery is REGISTRY-FREE. CI builds the container image, exports it
+# with `docker save`, and publishes it as a workflow artifact. The configure
+# stage scp's that tarball to the instance and Ansible loads it with
+# `docker load`. The EC2 host never contacts a container registry.
 
 direction: down
 
@@ -10,7 +15,7 @@ dev: Developer {
 gh: GitHub {
   repo: Repository\nowaspcheck
   actions: GitHub Actions\ndeploy.yml
-  ghcr: GHCR\nghcr.io/<owner>/owaspcheck
+  artifact: Workflow artifact\nowaspcheck-image.tar.gz
 }
 
 aws: AWS us-east-1 {
@@ -46,13 +51,13 @@ aws: AWS us-east-1 {
 
 dev -> gh.repo: git push
 gh.repo -> gh.actions: workflow_dispatch
-gh.actions -> gh.ghcr: 1. build + push image
+gh.actions -> gh.artifact: 1. docker build + save\nupload artifact
 gh.actions -> aws.tfstate: 2. terraform init/apply
 gh.actions -> aws.vpc.public.ec2: 3. puppet apply\n(java, docker, users, hardening)
-gh.actions -> aws.vpc.public.ec2: 4. ansible\n(nginx, container, env, start)
+gh.actions -> aws.vpc.public.ec2: 4. ansible\n(nginx, docker load, env, start)
 gh.actions -> aws.vpc.public.eip: 5. GET /actuator/health
 
-aws.vpc.public.ec2.container -> gh.ghcr: docker pull
+gh.artifact -> aws.vpc.public.ec2.container: scp tarball\nthen docker load
 aws.vpc.public.ec2.container -> aws.vpc.private.rds: JDBC 5432
 aws.iam -> aws.vpc.public.ec2: instance profile\n(SSM + CloudWatch)
 

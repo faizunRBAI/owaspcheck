@@ -1,8 +1,8 @@
 # udap:meta cloud=aws region=us-east-1 target=ec2
 
 developer: Developer / API Client { shape: person; udap-type: generic.user }
-ghcr: GHCR Container Registry { shape: rectangle; udap-type: generic.cdn }
 actions: GitHub Actions CI/CD { shape: rectangle; udap-type: generic.app }
+artifact: Image Tarball Artifact { shape: rectangle; udap-type: generic.queue }
 vpc: VPC 10.20.0.0/16 {
   eip: Elastic IP { shape: rectangle; udap-type: aws.ec2 }
   nginx: Nginx Reverse Proxy :80 { shape: rectangle; udap-type: generic.app }
@@ -15,8 +15,8 @@ developer -> vpc.eip: HTTPS/HTTP 80
 vpc.eip -> vpc.nginx: forwards
 vpc.nginx -> vpc.app: proxy_pass 127.0.0.1:8080
 vpc.app -> vpc.db: JDBC 5432 (private)
-actions -> ghcr: push image
+actions -> artifact: docker save + upload
+artifact -> vpc.app: scp then docker load
 actions -> vpc.app: Puppet bootstrap then Ansible deploy
-vpc.app -> ghcr: docker pull image
 iam -> vpc.app: instance profile
 developer -> vpc.nginx: GET /actuator/health

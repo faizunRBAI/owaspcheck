@@ -95,7 +95,7 @@ jobs:
     - name: Confirm SpotBugs exclude filter is present
       run: 'ls -l config/spotbugs/exclude.xml
 
-        echo "--- filter contents ---"
+        echo "filter contents follow"
 
         cat config/spotbugs/exclude.xml
 
@@ -131,7 +131,7 @@ jobs:
       with:
         name: owasp-dependency-check-report
         path: target/dependency-check-report.html
-  docker_push:
+  docker_build:
     runs-on: ubuntu-latest
     needs:
     - unit_tests
@@ -139,9 +139,6 @@ jobs:
     - checkstyle
     - spotbugs
     - dependency_check
-    env:
-      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GHCR_USER: ${{ github.actor }}
     timeout-minutes: 30
     steps:
     - uses: actions/checkout@v4
@@ -153,28 +150,24 @@ jobs:
         cache: maven
     - name: Package jar
       run: mvn -B -ntp clean package -DskipTests
-    - name: Resolve lowercase image reference
-      run: 'repo_lc=$(echo "${{ github.repository }}" | tr ''[:upper:]'' ''[:lower:]'')
+    - name: Build image
+      run: docker build -t "owaspcheck:${{ github.sha }}" .
+    - name: Export image to a tarball
+      run: 'docker save "owaspcheck:${{ github.sha }}" | gzip -9 > owaspcheck-image.tar.gz
 
-        echo "IMAGE_SHA=ghcr.io/${repo_lc}:${{ github.sha }}" >> "$GITHUB_ENV"
-
-        echo "IMAGE_LATEST=ghcr.io/${repo_lc}:latest" >> "$GITHUB_ENV"
-
-        echo "resolved image: ghcr.io/${repo_lc}"
+        ls -lh owaspcheck-image.tar.gz
 
         '
-    - name: Log in to GHCR
-      run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-    - name: Build image
-      run: docker build -t "$IMAGE_SHA" -t "$IMAGE_LATEST" .
-    - name: Push image
-      run: docker push "$IMAGE_SHA"
-    - name: Push latest tag
-      run: docker push "$IMAGE_LATEST"
+    - name: Upload image artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: owaspcheck-image
+        path: owaspcheck-image.tar.gz
+        retention-days: 1
   provision:
     runs-on: ubuntu-latest
     needs:
-    - docker_push
+    - docker_build
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -256,10 +249,9 @@ jobs:
       HOST: ${{ needs.provision.outputs.instance_ip }}
       SSH_USER: ${{ secrets.SSH_USER }}
       SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-      GHCR_USER: ${{ github.actor }}
-      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       APP_DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
       APP_JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      IMAGE_REF: owaspcheck:${{ github.sha }}
     timeout-minutes: 30
     steps:
     - uses: actions/checkout@v4
@@ -273,14 +265,10 @@ jobs:
         python3 -m pip install "ansible-core>=2.16"
 
         '
-    - name: Resolve lowercase image reference
-      run: 'repo_lc=$(echo "${{ github.repository }}" | tr ''[:upper:]'' ''[:lower:]'')
-
-        echo "IMAGE_REF=ghcr.io/${repo_lc}:${{ github.sha }}" >> "$GITHUB_ENV"
-
-        echo "resolved image: ghcr.io/${repo_lc}:${{ github.sha }}"
-
-        '
+    - name: Download image artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: owaspcheck-image
     - name: Read DB endpoint from terraform state
       run: "terraform init -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
         \ secrets.TF_STATE_BUCKET }}\" \\\n  -backend-config=\"key=${{ secrets.PROJECT_NAME\
@@ -299,6 +287,9 @@ jobs:
         ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts
 
         '
+    - name: Copy image tarball to the host
+      run: scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key owaspcheck-image.tar.gz
+        "$SSH_USER@$HOST:/tmp/owaspcheck-image.tar.gz"
     - name: Generate inventory
       run: 'printf ''[app]\n%s ansible_user=%s ansible_ssh_private_key_file=%s\n''
         "$HOST" "$SSH_USER" "$HOME/.ssh/deploy_key" > ansible/inventory.ini
@@ -308,7 +299,7 @@ jobs:
         '
     - name: Run Ansible playbook
       run: "ansible-playbook -i ansible/inventory.ini ansible/site.yml \\\n  -e \"\
-        image_ref=$IMAGE_REF\" \\\n  -e \"ghcr_user=$GHCR_USER\" \\\n  -e \"ghcr_token=$GHCR_TOKEN\"\
+        image_ref=$IMAGE_REF\" \\\n  -e \"image_archive=/tmp/owaspcheck-image.tar.gz\"\
         \ \\\n  -e \"db_host=$DB_HOST\" \\\n  -e \"db_name=$DB_NAME\" \\\n  -e \"\
         db_user=$DB_USER\" \\\n  -e \"db_password=$APP_DB_PASSWORD\" \\\n  -e \"jwt_secret=$APP_JWT_SECRET\"\
         \n"
@@ -346,6 +337,7 @@ jobs:
   perf:
     runs-on: ubuntu-latest
     needs:
+    - provision
     - verify
     env:
       BASE_URL: http://${{ needs.provision.outputs.instance_ip }}

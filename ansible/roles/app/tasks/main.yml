@@ -1,10 +1,15 @@
 ---
-# Application delivery: environment file, image pull, systemd-managed container.
+# Application delivery: environment file, image load, systemd-managed container.
 # Uses only ansible.builtin modules - ansible-core ships no community.docker.
 #
-# Every command task declares changed_when explicitly: docker login and prune
-# are read-mostly probes, and the pull reports change only when it actually
-# downloaded new layers. This keeps reruns honest and idempotent.
+# REGISTRY-FREE DELIVERY: the image is built in CI and shipped to this host as
+# a gzipped tarball (scp'd to {{ image_archive }} by the configure stage), then
+# loaded with `docker load`. The host never authenticates to a registry, so the
+# GHCR organization-package permission is irrelevant here.
+#
+# Every command task declares changed_when explicitly: the load reports change
+# only when it actually imported a new layer set, and prune is a read-mostly
+# probe. This keeps reruns honest and idempotent.
 
 - name: Ensure the application config directory exists
   ansible.builtin.file:
@@ -24,34 +29,43 @@
   no_log: true
   register: env_file
 
-- name: Log in to GHCR
-  ansible.builtin.command:
-    argv:
-      - docker
-      - login
-      - ghcr.io
-      - --username
-      - "{{ ghcr_user }}"
-      - --password-stdin
-  args:
-    stdin: "{{ ghcr_token }}"
-  register: ghcr_login
-  changed_when: false
-  failed_when: ghcr_login.rc != 0
-  no_log: true
+- name: Confirm the image archive arrived on the host
+  ansible.builtin.stat:
+    path: "{{ image_archive }}"
+  register: image_archive_stat
 
-- name: Pull the application image
+- name: Fail early when the image archive is missing
+  ansible.builtin.fail:
+    msg: >-
+      Image archive {{ image_archive }} was not found on the host. The
+      configure stage must scp it before running this playbook.
+  when: not image_archive_stat.stat.exists
+
+# `docker load` is idempotent in effect: re-loading an image that is already
+# present re-uses the existing layers and prints "Loaded image" without
+# changing anything meaningful. The changed_when below reports a real import
+# only when at least one layer was actually added.
+- name: Load the application image from the archive
   ansible.builtin.command:
     argv:
       - docker
-      - pull
+      - load
+      - --input
+      - "{{ image_archive }}"
+  register: docker_load
+  changed_when: "'Loaded image' in docker_load.stdout"
+  failed_when: docker_load.rc != 0
+
+- name: Confirm the expected image tag is now present
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - inspect
       - "{{ image_ref }}"
-  register: docker_pull
-  changed_when: "'Downloaded newer image' in docker_pull.stdout"
-  failed_when: docker_pull.rc != 0
-  retries: 3
-  delay: 15
-  until: docker_pull.rc == 0
+  register: image_inspect
+  changed_when: false
+  failed_when: image_inspect.rc != 0
 
 - name: Install the systemd unit for the portal container
   ansible.builtin.template:
@@ -77,6 +91,11 @@
   ansible.builtin.systemd_service:
     name: "{{ container_name }}"
     state: restarted
+
+- name: Remove the image archive now that it has been loaded
+  ansible.builtin.file:
+    path: "{{ image_archive }}"
+    state: absent
 
 - name: Remove dangling images left by previous deployments
   ansible.builtin.command:
