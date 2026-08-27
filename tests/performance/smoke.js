@@ -27,6 +27,29 @@ import { Rate, Trend } from 'k6/metrics';
 //   2. The pipeline's perf stage curls the endpoints before invoking k6.
 // The thresholds themselves are unchanged - the point is to measure the
 // steady state honestly, not to lower the bar until a cold start passes.
+//
+// EXPECTED-STATUS DISCIPLINE (http_req_failed)
+// --------------------------------------------
+// k6's built-in http_req_failed metric counts ANY response with status >= 400
+// as a failed request. The authz group below deliberately calls a protected
+// endpoint WITHOUT a token and asserts it is rejected with 401 - correct,
+// desired behaviour, and the check passes. But that 401 was still counted in
+// http_req_failed. With one deliberate 401 out of six requests per iteration
+// the metric sat at a FIXED 0.167 against a rate<0.05 threshold, so the gate
+// could never pass no matter how healthy the app was. Measured on the live
+// instance: p(95) 4.2 ms, checks 1.00, portal_errors 0.00, and zero errors in
+// the container log - only http_req_failed breached, and structurally.
+//
+// The fix is k6's responseCallback, which declares which statuses are
+// EXPECTED for a given request. This corrects the measurement; it does not
+// lower any bar:
+//   * the rate<0.05 threshold is unchanged and still enforced
+//   * every other request keeps the default 2xx/3xx expectation, so a genuine
+//     5xx anywhere still fails the build
+//   * the authz request still FAILS the build if it returns 200 - the check
+//     asserts 401/403 and a regression that exposes the endpoint breaks it
+// Only the deliberate, asserted rejection stops being miscounted as a
+// transport failure.
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 
@@ -37,6 +60,11 @@ const LOAD_TEST_CREDENTIAL =
 
 // Endpoints whose first hit carries one-time initialisation cost.
 const WARMUP_PATHS = ['/actuator/health', '/', '/v3/api-docs', '/api/v1/projects'];
+
+// A rejected anonymous request is the CORRECT outcome for the authz probe, so
+// 401/403 are expected statuses there and must not inflate http_req_failed.
+// Scoped to that single request - everything else keeps k6's 2xx/3xx default.
+const REJECTION_EXPECTED = http.expectedStatuses(401, 403);
 
 const errorRate = new Rate('portal_errors');
 const authDuration = new Trend('auth_duration_ms');
@@ -157,7 +185,13 @@ export default function (data) {
   }
 
   group('authz', () => {
-    const res = http.get(`${BASE_URL}/api/v1/projects`);
+    // responseCallback marks 401/403 as EXPECTED for this request only, so the
+    // deliberate rejection is not counted as a transport failure. The check
+    // below is still the gate: a 200 here means the endpoint is exposed and
+    // the build fails.
+    const res = http.get(`${BASE_URL}/api/v1/projects`, {
+      responseCallback: REJECTION_EXPECTED,
+    });
     const ok = check(res, {
       'anonymous catalog access is rejected': (r) => r.status === 401 || r.status === 403,
     });
