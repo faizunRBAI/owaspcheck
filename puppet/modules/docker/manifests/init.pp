@@ -35,7 +35,7 @@ class docker (
   }
 
   # Fetch and dearmor Docker's signing key. Guarded by creates:, so this runs
-  # exactly once per host.
+  # exactly once per host. The pipe REQUIRES a shell, hence bash -c.
   exec { 'docker_gpg_key':
     command => '/bin/bash -c "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg"',
     creates => '/etc/apt/keyrings/docker.gpg',
@@ -107,9 +107,15 @@ class docker (
 
   # Allow the deploy user to drive Docker without sudo, which is what the
   # Ansible stage relies on.
+  #
+  # The `unless` guard contains a PIPE, which puppet's default exec provider
+  # does NOT interpret - it would pass "|" and "grep" as literal arguments to
+  # id(1). Wrapping it in `bash -c` gives the guard a real shell, so a host
+  # that already has the group membership is correctly detected as in-sync
+  # instead of running usermod on every single run.
   exec { "docker_group_${docker_user}":
     command => "/usr/sbin/usermod -aG docker ${docker_user}",
-    unless  => "/usr/bin/id -nG ${docker_user} | /bin/grep -qw docker",
+    unless  => "/bin/bash -c \"id -nG ${docker_user} | grep -qw docker\"",
     path    => ['/usr/bin', '/bin', '/usr/sbin', '/sbin'],
     require => Service['docker'],
   }

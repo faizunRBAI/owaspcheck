@@ -232,8 +232,19 @@ stages:
           done
           echo "SSH never became available"
           exit 1
+      # The destination MUST be removed first. `scp -r puppet host:/tmp/puppet`
+      # creates /tmp/puppet on the first run, but on every later run the
+      # destination already exists and scp copies INTO it, producing
+      # /tmp/puppet/puppet/... while puppet keeps applying the stale tree at
+      # /tmp/puppet/modules. That silently defeats EVERY manifest change.
+      - name: Remove any stale Puppet tree on the host
+        run: ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key "$SSH_USER@$HOST" 'sudo rm -rf /tmp/puppet'
       - name: Copy Puppet manifests
         run: scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key -r puppet "$SSH_USER@$HOST:/tmp/puppet"
+      # Fail loudly if the tree nested anyway, instead of applying stale
+      # manifests and reporting a misleading downstream error.
+      - name: Verify the copied Puppet tree is the expected one
+        run: ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key "$SSH_USER@$HOST" 'test ! -d /tmp/puppet/puppet && test -f /tmp/puppet/manifests/site.pp && test -f /tmp/puppet/modules/docker/manifests/init.pp && echo "puppet tree OK"'
       - name: Install Puppet agent
         run: ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key "$SSH_USER@$HOST" 'sudo bash /tmp/puppet/install_puppet.sh'
       - name: Apply Puppet bootstrap manifest
@@ -285,6 +296,8 @@ stages:
           ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts
       # The image tarball is large, so it is copied once over scp here rather
       # than streamed through an Ansible module. Ansible then loads it.
+      # The destination is an explicit FILE path, so this cannot nest the way
+      # a directory copy does.
       - name: Copy image tarball to the host
         run: scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key owaspcheck-image.tar.gz "$SSH_USER@$HOST:/tmp/owaspcheck-image.tar.gz"
       - name: Generate inventory

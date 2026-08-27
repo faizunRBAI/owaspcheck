@@ -225,9 +225,17 @@ jobs:
         \ -o ConnectTimeout=10 -i ~/.ssh/deploy_key \"$SSH_USER@$HOST\" 'echo ready';\
         \ then\n    exit 0\n  fi\n  echo \"SSH not ready yet (attempt $i), retrying\
         \ in 10s\"\n  sleep 10\ndone\necho \"SSH never became available\"\nexit 1\n"
+    - name: Remove any stale Puppet tree on the host
+      run: ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key "$SSH_USER@$HOST"
+        'sudo rm -rf /tmp/puppet'
     - name: Copy Puppet manifests
       run: scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key -r puppet
         "$SSH_USER@$HOST:/tmp/puppet"
+    - name: Verify the copied Puppet tree is the expected one
+      run: ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key "$SSH_USER@$HOST"
+        'test ! -d /tmp/puppet/puppet && test -f /tmp/puppet/manifests/site.pp &&
+        test -f /tmp/puppet/modules/docker/manifests/init.pp && echo "puppet tree
+        OK"'
     - name: Install Puppet agent
       run: ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key "$SSH_USER@$HOST"
         'sudo bash /tmp/puppet/install_puppet.sh'

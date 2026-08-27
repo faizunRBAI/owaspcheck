@@ -10,6 +10,14 @@
 # Every command task declares changed_when explicitly: the load reports change
 # only when it actually imported a new layer set, and prune is a read-mostly
 # probe. This keeps reruns honest and idempotent.
+#
+# MODULE CHOICE: ansible.builtin.systemd (NOT systemd_service). The latter is
+# the newer name and only exists from ansible-core 2.17; `systemd` is the
+# long-standing name that resolves on every version. Since the configure stage
+# installs ansible-core from pip at runtime, pinning behaviour to a module that
+# may not exist would fail at PARSE time - ansible resolves every module before
+# the first task runs, so the whole play would die with
+# "couldn't resolve module/action", not a single skipped task.
 
 - name: Ensure the application config directory exists
   ansible.builtin.file:
@@ -77,20 +85,27 @@
   register: unit_file
 
 - name: Reload systemd so the unit definition is current
-  ansible.builtin.systemd_service:
+  ansible.builtin.systemd:
     daemon_reload: true
 
 - name: Enable the portal service at boot
-  ansible.builtin.systemd_service:
+  ansible.builtin.systemd:
     name: "{{ container_name }}"
     enabled: true
 
 # Always restart on a deploy: the image tag is pinned to the commit SHA, so a
 # new image or a changed environment file must take effect immediately.
 - name: Restart the portal service to apply the current image and configuration
-  ansible.builtin.systemd_service:
+  ansible.builtin.systemd:
     name: "{{ container_name }}"
     state: restarted
+
+- name: Wait for the application to answer on its container port
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ app_port }}"
+    delay: 5
+    timeout: 180
 
 - name: Remove the image archive now that it has been loaded
   ansible.builtin.file:
