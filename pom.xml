@@ -76,6 +76,27 @@
         -->
         <dependency.check.version>12.1.9</dependency.check.version>
         <jacoco.version>0.8.13</jacoco.version>
+
+        <!--
+          Explicit, project-local NVD database location.
+
+          The plugin's default data directory lives under the Maven repository
+          at a version-scoped path (~/.m2/repository/org/owasp/
+          dependency-check-data/<major>/), which changes whenever the plugin's
+          major version moves and is therefore a fragile thing for a CI cache
+          key to point at.
+
+          Pinning it here gives the pipeline ONE stable path to cache. That
+          matters: a cold run downloads the entire NVD feed, which took ~14
+          minutes on a good day and exceeded the 45-minute stage timeout on a
+          bad one. With this directory restored from cache the plugin only
+          fetches the delta since the last run.
+
+          This is a PERFORMANCE change only. failBuildOnCVSS stays at 9 and the
+          feed is still refreshed on every run - a restored cache is updated,
+          never trusted as-is.
+        -->
+        <nvd.data.directory>${project.basedir}/.nvd-cache</nvd.data.directory>
     </properties>
 
     <dependencies>
@@ -258,6 +279,12 @@
                     <suppressionFiles>
                         <suppressionFile>config/owasp/suppressions.xml</suppressionFile>
                     </suppressionFiles>
+                    <!--
+                      Stable, cacheable location for the NVD H2 database. See
+                      the nvd.data.directory property above for why this is
+                      pinned rather than left at the plugin default.
+                    -->
+                    <dataDirectory>${nvd.data.directory}</dataDirectory>
                     <nvdApiDelay>6000</nvdApiDelay>
                     <nvdMaxRetryCount>15</nvdMaxRetryCount>
                     <assemblyAnalyzerEnabled>false</assemblyAnalyzerEnabled>

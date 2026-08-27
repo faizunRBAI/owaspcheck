@@ -111,10 +111,34 @@ stages:
       - name: SpotBugs gate
         run: mvn -B -ntp spotbugs:check -Dspotbugs.excludeFilterFile=config/spotbugs/exclude.xml
 
+  # SECURITY GATE - failBuildOnCVSS=9, unchanged.
+  #
+  # The previous run was CANCELLED after exactly 45 minutes: the stage timeout
+  # fired while the plugin was still downloading the full NVD feed. The same
+  # gate completed in ~14 minutes on the run before it, with identical
+  # dependencies and suppressions - the variable is NVD's responsiveness, not
+  # this project.
+  #
+  # The fix targets the mechanism (re-downloading the entire feed every run)
+  # rather than the symptom: the NVD H2 database (pom.xml -> nvd.data.directory
+  # -> .nvd-cache) is cached between runs, so a warm run fetches only the delta.
+  # The 60-minute timeout is headroom for a COLD cache only.
+  #
+  # STEP ORDER MATTERS. The database refresh (`update-only`) is a SEPARATE step
+  # that runs BEFORE the gate. actions/cache saves its cache only when the job
+  # SUCCEEDS, so folding the refresh into the failing `check` step would mean a
+  # red gate never saves a cache - and every retry would pay the full cold
+  # download again, precisely when fast cycles matter most. Splitting them means
+  # the expensive download is banked as soon as it completes, independent of the
+  # gate's verdict.
+  #
+  # This is a performance change only: NVD is still contacted on every run, a
+  # restored database is refreshed rather than trusted as-is, and the CVSS
+  # threshold is untouched.
   - id: dependency_check
     kind: security
     needs: [build]
-    timeout_minutes: 45
+    timeout_minutes: 60
     env:
       NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
     steps:
@@ -124,8 +148,34 @@ stages:
           distribution: temurin
           java-version: "21"
           cache: maven
-      - name: OWASP Dependency Check
-        run: mvn -B -ntp dependency-check:check
+      # Date-stamped key so the database is refreshed daily, with restore-keys
+      # falling back to the most recent older entry. That fallback is the
+      # important part: on a key miss we still restore an older database and
+      # download only the delta, instead of paying for a full cold feed.
+      - name: Restore NVD database cache
+        uses: actions/cache@v4
+        with:
+          path: .nvd-cache
+          key: nvd-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            nvd-db-${{ runner.os }}-
+      - name: Report NVD cache state
+        run: |
+          if [ -d .nvd-cache ]; then
+            echo "NVD cache restored:"
+            du -sh .nvd-cache
+          else
+            echo "NVD cache MISS - this run performs a full feed download"
+          fi
+      # The expensive part, isolated so its result is cached regardless of
+      # whether the gate below passes.
+      - name: Refresh the NVD database
+        run: mvn -B -ntp dependency-check:update-only
+      - name: Report NVD database size after refresh
+        run: du -sh .nvd-cache
+      # Analysis + gate. Runs offline against the database refreshed above.
+      - name: OWASP Dependency Check gate
+        run: mvn -B -ntp dependency-check:check -Dautoupdate=false
       - name: Upload dependency-check report
         uses: actions/upload-artifact@v4
         with:

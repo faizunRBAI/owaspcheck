@@ -17,3 +17,11 @@ tests
 .idea
 .vscode
 *.iml
+
+# OWASP Dependency-Check NVD database. Large, machine-generated, and
+# irrelevant to the runtime image - keeping it out of the build context
+# avoids shipping hundreds of MB to the Docker daemon on every build.
+.nvd-cache
+
+# Exported image tarball - never part of a build context.
+owaspcheck-image.tar.gz

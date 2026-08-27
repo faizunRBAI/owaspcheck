@@ -30,3 +30,12 @@ ansible/*.retry
 
 # Reports
 dependency-check-report.*
+
+# OWASP Dependency-Check NVD database (pom.xml: nvd.data.directory).
+# Hundreds of MB of H2 data rebuilt from the NVD feed and restored by the
+# CI cache - never a repository artifact.
+.nvd-cache/
+
+# Image tarball produced by the docker_build stage and shipped to the host
+# as a workflow artifact.
+owaspcheck-image.tar.gz

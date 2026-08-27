@@ -115,7 +115,7 @@ jobs:
     - build
     env:
       NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
     - uses: actions/checkout@v4
     - name: Set up JDK 21
@@ -124,8 +124,24 @@ jobs:
         distribution: temurin
         java-version: '21'
         cache: maven
-    - name: OWASP Dependency Check
-      run: mvn -B -ntp dependency-check:check
+    - name: Restore NVD database cache
+      uses: actions/cache@v4
+      with:
+        path: .nvd-cache
+        key: nvd-db-${{ runner.os }}-${{ github.run_id }}
+        restore-keys: 'nvd-db-${{ runner.os }}-
+
+          '
+    - name: Report NVD cache state
+      run: "if [ -d .nvd-cache ]; then\n  echo \"NVD cache restored:\"\n  du -sh .nvd-cache\n\
+        else\n  echo \"NVD cache MISS - this run performs a full feed download\"\n\
+        fi\n"
+    - name: Refresh the NVD database
+      run: mvn -B -ntp dependency-check:update-only
+    - name: Report NVD database size after refresh
+      run: du -sh .nvd-cache
+    - name: OWASP Dependency Check gate
+      run: mvn -B -ntp dependency-check:check -Dautoupdate=false
     - name: Upload dependency-check report
       uses: actions/upload-artifact@v4
       with:
