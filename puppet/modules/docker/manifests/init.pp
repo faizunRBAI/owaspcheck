@@ -24,8 +24,17 @@ class docker (
   #   E: Malformed entry 1 in list file .../docker.list (Component)
   # That breaks EVERY apt operation on the host, so puppet could not even
   # prefetch the package provider and the whole catalog failed.
-  $docker_codename = fact('os.distro.codename')
-  $docker_arch     = fact('os.architecture')
+  #
+  # USE THE $facts HASH, NOT fact(). The fact() function is provided by the
+  # puppetlabs-stdlib MODULE, which this masterless setup does not install -
+  # `puppet apply --modulepath=/tmp/puppet/modules` sees only the modules in
+  # this repository. Calling it aborted catalog COMPILATION outright:
+  #   Error: Evaluation Error: Unknown function: 'fact'.
+  #   (file: .../docker/manifests/init.pp, line: 27)
+  # $facts is part of the Puppet language itself and needs no module.
+  # Verified on the target host: jammy / amd64.
+  $docker_codename = $facts['os']['distro']['codename']
+  $docker_arch     = $facts['os']['architecture']
 
   file { '/etc/apt/keyrings':
     ensure => directory,
