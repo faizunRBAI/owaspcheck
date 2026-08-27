@@ -1,58 +1,59 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <FindBugsFilter>
     <!--
-      ====================================================================
-      SpotBugs exclusions for owaspcheck
-      ====================================================================
+      SpotBugs exclusions for owaspcheck.
 
       Analysis runs at effort=Max, threshold=Medium, and ANY unexcluded
       finding fails the build.
 
-      ------------------------------------------------------------------
-      A NOTE ON READING THE REPORT (learned the hard way)
-      ------------------------------------------------------------------
-      A run with this filter in place reported "Total bugs: 1". That was
-      briefly misread as "only one finding exists in the codebase", and
-      the EI_EXPOSE_REP block below was deleted as dead policy. The next
-      run reported "Total bugs: 12" - the count had been 1 BECAUSE the
-      filter was suppressing the other 12.
+      XML COMMENT RULE (this file broke on it once):
+      an XML comment body may NOT contain a double hyphen. No ASCII rule
+      lines, no "wait for it" dashes, no arrows. SpotBugs reports an
+      unreadable filter as a NON FATAL analysis error and then runs with
+      NO exclusions at all, so a malformed comment silently disables the
+      entire file and every finding fires.
 
-      A finding count from a FILTERED run says nothing about what the
-      filter is hiding. To see the unfiltered picture, run
-      `mvn spotbugs:spotbugs` with -Dspotbugs.excludeFilterFile= and read
-      target/spotbugsXml.xml. Never infer a filter is unused from a low
-      count while that filter is active.
+      READING THE REPORT (learned the hard way):
+      a run with this filter active reported "Total bugs: 1". That was
+      briefly misread as "only one finding exists", and the EI_EXPOSE_REP
+      block was deleted as dead policy. The next run reported
+      "Total bugs: 12" because the count had been 1 BECAUSE the filter
+      was suppressing the other 12. A finding count from a FILTERED run
+      says nothing about what the filter hides. For the unfiltered
+      picture run mvn spotbugs:spotbugs with an empty
+      -Dspotbugs.excludeFilterFile and read target/spotbugsXml.xml.
 
-      Note on <Package>: SpotBugs matches package names exactly unless the
-      "~" regex form is used. Sub-packages are NOT implied.
+      Package matching: SpotBugs matches package names exactly unless the
+      "~" regex form is used. Sub packages are NOT implied.
     -->
 
     <!--
       EI_EXPOSE_REP / EI_EXPOSE_REP2 across the application.
 
       All 12 findings observed with this block removed fall into exactly
-      two categories, both structural to Spring + JPA rather than defects:
+      two categories, both structural to Spring and JPA rather than
+      defects:
 
-        * Constructor injection (6 findings) - DeploymentController,
-          EnvironmentController, ProjectController, TeamController,
-          JwtTokenProvider, SecurityConfig each store the singleton
-          collaborator Spring hands them. SpotBugs reads "stores an
-          externally mutable object" as representation exposure; it is
-          the framework's documented dependency-injection pattern, and
-          the collaborators are stateless singletons owned by the
-          container. Defensively copying a Spring bean would break
-          proxying, transactions and the security filter chain.
+        Constructor injection (6 findings): DeploymentController,
+        EnvironmentController, ProjectController, TeamController,
+        JwtTokenProvider, SecurityConfig each store the singleton
+        collaborator Spring hands them. SpotBugs reads "stores an
+        externally mutable object" as representation exposure; it is the
+        framework's documented dependency injection pattern, and the
+        collaborators are stateless singletons owned by the container.
+        Defensively copying a Spring bean would break proxying,
+        transactions and the security filter chain.
 
-        * JPA relationship accessors (6 findings) -
-          Deployment.get/setEnvironment, Environment.get/setProject,
-          Project.get/setTeam. Hibernate REQUIRES these accessors for
-          mapped @ManyToOne associations and must receive the managed
-          instance, not a copy - a defensive copy would detach the entity
-          from the persistence context and break dirty checking and
-          cascade behaviour.
+        JPA relationship accessors (6 findings):
+        Deployment.get/setEnvironment, Environment.get/setProject,
+        Project.get/setTeam. Hibernate REQUIRES these accessors for
+        mapped ManyToOne associations and must receive the managed
+        instance, not a copy. A defensive copy would detach the entity
+        from the persistence context and break dirty checking and
+        cascade behaviour.
 
       Scoped deliberately to these TWO patterns only. Every other bug
-      category stays enabled across the entire codebase - and that gate
+      category stays enabled across the entire codebase, and that gate
       has already caught a real defect here (CT_CONSTRUCTOR_THROW in
       JwtTokenProvider, fixed at the source by sealing the class rather
       than by adding an exclusion).
