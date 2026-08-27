@@ -12,6 +12,21 @@ class docker (
     'docker-compose-plugin',
   ]
 
+  # Resolved at CATALOG COMPILE time from facter, never by shell interpolation.
+  #
+  # A previous revision built this line with nested shell quoting:
+  #   echo "deb [...] $(. /etc/os-release && echo \$VERSION_CODENAME) stable"
+  # Passing that through Puppet's string parsing into `bash -c` expanded
+  # $VERSION_CODENAME in the OUTER shell (to an empty string) before the
+  # subshell ever sourced /etc/os-release. The resulting line was
+  #   deb [...] https://download.docker.com/linux/ubuntu  stable
+  # with the codename missing, which apt rejects as
+  #   E: Malformed entry 1 in list file .../docker.list (Component)
+  # That breaks EVERY apt operation on the host, so puppet could not even
+  # prefetch the package provider and the whole catalog failed.
+  $docker_codename = fact('os.distro.codename')
+  $docker_arch     = fact('os.architecture')
+
   file { '/etc/apt/keyrings':
     ensure => directory,
     owner  => 'root',
@@ -37,19 +52,25 @@ class docker (
     require => Exec['docker_gpg_key'],
   }
 
-  exec { 'docker_apt_source':
-    command => '/bin/bash -c "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo \\$VERSION_CODENAME) stable\" > /etc/apt/sources.list.d/docker.list"',
-    creates => '/etc/apt/sources.list.d/docker.list',
-    path    => ['/usr/bin', '/bin', '/usr/sbin', '/sbin'],
+  # A file resource rather than an exec with creates:. The exec's guard only
+  # checked EXISTENCE, so a host that already had the malformed line would
+  # skip regeneration forever and stay broken. A file resource enforces the
+  # CONTENT, which makes the fix self-healing on re-run.
+  file { '/etc/apt/sources.list.d/docker.list':
+    ensure  => file,
+    owner   => 'root',
+    group   => 'root',
+    mode    => '0644',
+    content => "deb [arch=${docker_arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${docker_codename} stable\n",
     require => File['/etc/apt/keyrings/docker.gpg'],
+    notify  => Exec['docker_apt_update'],
   }
 
   exec { 'docker_apt_update':
     command     => '/usr/bin/apt-get update',
-    refreshonly => false,
+    refreshonly => true,
     timeout     => 600,
-    subscribe   => Exec['docker_apt_source'],
-    require     => Exec['docker_apt_source'],
+    require     => File['/etc/apt/sources.list.d/docker.list'],
   }
 
   package { $docker_packages:
@@ -89,6 +110,7 @@ class docker (
   exec { "docker_group_${docker_user}":
     command => "/usr/sbin/usermod -aG docker ${docker_user}",
     unless  => "/usr/bin/id -nG ${docker_user} | /bin/grep -qw docker",
+    path    => ['/usr/bin', '/bin', '/usr/sbin', '/sbin'],
     require => Service['docker'],
   }
 }
